@@ -126,6 +126,16 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
         self.assertNotIn("response_format", body)
 
+    def test_payload_leaves_room_for_reasoning_models(self):
+        self.assertGreaterEqual(probe_payload(self.config)["max_tokens"], 128)
+
+    def test_truncated_reply_explains_the_missing_content(self):
+        accepted, message = probe(self.config, open_url=self.opener(
+            {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}))
+        self.assertTrue(accepted)
+        self.assertIn("finish_reason=length", message)
+        self.assertIn("max_tokens", message)
+
     def test_accepting_endpoint_is_reported_as_supported(self):
         accepted, message = probe(self.config, open_url=self.opener(
             {"choices": [{"message": {"content": "红色"}}]}))
