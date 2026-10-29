@@ -1,11 +1,15 @@
 """本地图片发送前的文件校验；不连接网络或原生微信服务。"""
 from __future__ import annotations
 
+import base64
+import io
 import os
 from pathlib import Path
 import stat
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+VISION_MAX_SIDE = 1280
+VISION_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _has_image_signature(header):
@@ -44,3 +48,28 @@ def validate_image_path(path):
     if not _has_image_signature(header):
         raise ValueError("图片格式仅支持 JPEG、PNG、GIF、WebP 和 BMP")
     return resolved
+
+
+def image_data_url(path, max_side=VISION_MAX_SIDE, max_bytes=VISION_MAX_BYTES):
+    """把本地图片压成视觉模型可用的 JPEG data URL，顺带剥掉原始元数据。"""
+    source = validate_image_path(path)
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(source) as decoded:
+            picture = ImageOps.exif_transpose(decoded)
+            if picture.mode in ("RGBA", "LA", "P"):
+                picture = picture.convert("RGBA")
+                canvas = Image.new("RGB", picture.size, "white")
+                canvas.paste(picture, mask=picture.split()[-1])
+                picture = canvas
+            picture = picture.convert("RGB")
+            picture.thumbnail((max_side, max_side))
+    except (OSError, ValueError) as error:
+        raise ValueError("图片无法解码，不能发给视觉模型") from error
+    for quality in (88, 78, 68, 58):
+        buffer = io.BytesIO()
+        picture.save(buffer, "JPEG", quality=quality, optimize=True)
+        data = buffer.getvalue()
+        if len(data) <= max_bytes:
+            return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+    raise ValueError("图片压缩后仍超过 4 MiB，不发给视觉模型")

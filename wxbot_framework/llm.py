@@ -57,6 +57,9 @@ class LLMClient:
         self.json_mode = options.get("json_mode", True)
         if type(self.json_mode) is not bool:
             raise ValueError("json_mode 应为布尔值")
+        self.reply_format = options.get("reply_format", "json")
+        if self.reply_format not in ("json", "text"):
+            raise ValueError("reply_format 应为 json 或 text")
         self.token_limit_parameter = options.get("token_limit_parameter", "max_tokens")
         if self.token_limit_parameter not in ("max_tokens", "max_completion_tokens"):
             raise ValueError("token_limit_parameter 应为 max_tokens 或 max_completion_tokens")
@@ -80,21 +83,33 @@ class LLMClient:
     def from_file(cls, path):
         return cls(json.loads(Path(path).read_text(encoding="utf-8-sig")))
 
-    def complete_json(self, system, user):
-        json_instruction = "\n\n请只返回一个有效的 JSON 对象，不要使用 Markdown 代码围栏或附加说明。"
-        if not self.json_mode:
-            system += json_instruction
+    JSON_INSTRUCTION = "\n\n请只返回一个有效的 JSON 对象，不要使用 Markdown 代码围栏或附加说明。"
+
+    def _content(self, system, user, image, *, structured):
+        """发一次补全并返回正文；structured 决定是否要求 JSON。网络、截断与空正文在这里统一映射。"""
+        vision = image is not None
+        # 视觉模型普遍不接受 response_format，带图时改用提示词约束并允许围栏。
+        if structured and (not self.json_mode or vision):
+            system += self.JSON_INSTRUCTION
+        body = user
+        if vision:
+            if not isinstance(image, str) or not image.startswith("data:image/"):
+                raise ValueError("image 必须是 data:image/... 形式的数据 URL")
+            body = [{"type": "text", "text": user},
+                    {"type": "image_url", "image_url": {"url": image}}]
         payload = {"model": self.model, "messages": [{"role": "system", "content": system},
-                                                       {"role": "user", "content": user}],
+                                                     {"role": "user", "content": body}],
                    self.token_limit_parameter: self.max_tokens, "stream": False, **self.extra_body}
-        if self.json_mode:
+        if structured and self.json_mode and not vision:
             payload["response_format"] = {"type": "json_object"}
         # 保留官方 DeepSeek 旧版的非思考行为；兼容网关不携带专属参数。
         # 用户显式指定的思考设置始终优先，旧的 reasoner 模型也不强制关闭。
         if (self._deepseek_official and self.model in ("deepseek-flash", "deepseek-v4-pro", "deepseek-chat")
                 and not {"thinking", "reasoning_effort"}.intersection(self.extra_body)):
             payload["thinking"] = {"type": "disabled"}
-        allow_fenced = not self.json_mode
+        expected = "JSON 正文" if structured else "文本正文"
+        # 提示词已经是 JSON 约束或带图时，模型倾向返回围栏，接受但会剥掉。
+        fenced_ok = structured and (not self.json_mode or vision)
         try:
             for attempt in range(2):
                 request = Request(self.endpoint,
@@ -114,34 +129,50 @@ class LLMClient:
                 if finish == "content_filter" or message.get("refusal"):
                     raise LLMError("大模型接口未提供可用正文，请检查服务商的内容限制")
                 if finish in ("tool_calls", "function_call") or message.get("tool_calls") or message.get("function_call"):
-                    raise LLMError("大模型返回了工具调用，当前功能需要直接返回 JSON 正文")
+                    raise LLMError(f"大模型返回了工具调用，当前功能需要直接返回{expected}")
                 content = message["content"]
                 if content is None or (isinstance(content, str) and not content.strip()):
                     if attempt == 0 and finish in (None, "stop"):
-                        if self._deepseek_official and self.json_mode:
+                        if structured and self._deepseek_official and self.json_mode:
                             # 官方 JSON 模式存在偶发空正文：仅此情形退回提示词 JSON，仍严格解析。
                             payload.pop("response_format", None)
-                            payload["messages"][0]["content"] += json_instruction
-                            allow_fenced = True
+                            payload["messages"][0]["content"] += self.JSON_INSTRUCTION
+                            fenced_ok = True
                         logging.getLogger("LLM").warning("大模型返回空正文，重试一次")
                         continue
                     suffix = "（只收到思考内容，未取得最终答案）" if message.get("reasoning_content") else ""
                     raise LLMError("大模型返回了空结果" + suffix)
                 if not isinstance(content, str):
                     raise LLMError("大模型正文格式不正确")
-                content = content.strip()
-                if allow_fenced and content.startswith("```") and content.endswith("```"):
-                    opening, separator, body = content.partition("\n")
-                    if separator and opening.strip().lower() in ("```", "```json"):
-                        content = body[:-3].strip()
-                data = json.loads(content)
-                if not isinstance(data, dict):
-                    raise LLMError("大模型结果应为 JSON 对象")
-                return data
+                return content.strip(), fenced_ok
         except HTTPError as error:
             # 不输出响应正文或请求头，避免服务器错误回显密钥。
             raise LLMError(f"大模型接口 HTTP {error.code}；请核对密钥、余额和模型配置") from None
         except (URLError, TimeoutError, OSError):
             raise LLMError("大模型连接失败或超时，请稍后再试") from None
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+            # 上游结构不符合预期时也只报类型，不泄露正文。
+            logging.getLogger("LLM").warning("大模型响应结构异常：%s", type(error).__name__)
             raise LLMError("大模型响应格式不正确，请重试") from None
+
+    def complete_json(self, system, user, image=None):
+        content, allow_fenced = self._content(system, user, image, structured=True)
+        try:
+            if allow_fenced and content.startswith("```") and content.endswith("```"):
+                opening, separator, body = content.partition("\n")
+                if separator and opening.strip().lower() in ("```", "```json"):
+                    content = body[:-3].strip()
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                raise LLMError("大模型结果应为 JSON 对象")
+            return data
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+            # 只记录异常类型，不输出正文，便于区分“模型说了人话”和 JSON 语法错误。
+            logging.getLogger("LLM").warning("大模型响应解析失败：%s", type(error).__name__)
+            raise LLMError("大模型响应格式不正确，请重试") from None
+
+    def complete_text(self, system, user, image=None):
+        """返回正文本身，不施加 JSON 约束；用于忽略 response_format 的网关。"""
+        content, _ = self._content(system, user, image, structured=False)
+        return content
+

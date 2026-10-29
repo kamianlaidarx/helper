@@ -129,6 +129,7 @@
   "timeout_seconds": 20,
   "max_tokens": 512,
   "json_mode": true,
+  "reply_format": "json",
   "token_limit_parameter": "max_tokens",
   "extra_body": {}
 }
@@ -146,6 +147,7 @@
   "timeout_seconds": 30,
   "max_tokens": 2048,
   "json_mode": true,
+  "reply_format": "json",
   "token_limit_parameter": "max_tokens",
   "extra_body": {}
 }
@@ -156,6 +158,7 @@
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `json_mode` | `true` | 发送 `response_format: {"type":"json_object"}`；接口不支持时改为 `false` |
+| `reply_format` | `json` | 艾特对话期望模型返回 `{"reply": "..."}`。服务商忽略 `response_format`、只回自然语言时改为 `text`：插件直接采用正文，不再要求 JSON |
 | `token_limit_parameter` | `max_tokens` | 可改为 `max_completion_tokens`，请求只发送选中的一种令牌参数 |
 | `max_tokens` | `512` | 上述令牌参数的数值，支持 128–4096 |
 | `extra_body` | `{}` | 可选扩展请求参数；其他兼容服务默认不发送 DeepSeek 的 `thinking` 等专属字段 |

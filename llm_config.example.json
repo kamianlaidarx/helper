@@ -5,6 +5,7 @@
   "timeout_seconds": 20,
   "max_tokens": 512,
   "json_mode": true,
+  "reply_format": "json",
   "token_limit_parameter": "max_tokens",
   "extra_body": {}
 }
