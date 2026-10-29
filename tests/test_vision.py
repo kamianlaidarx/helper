@@ -192,6 +192,10 @@ class Context:
         self.logger = logging.getLogger("MentionChatVisionTest")
         self.sent = []
         self._speech = None
+        self.active = {"mention_chat"}
+
+    def plugin_is_active(self, name):
+        return name in self.active
 
     def llm_for(self, message, personality=None):
         return self.client
@@ -263,6 +267,17 @@ class MentionChatVisionTests(unittest.TestCase):
         self.plugin.on_message(self.image(self.store()), self.ctx)
         self.assertEqual(self.ctx.client.calls, [])
         self.assertEqual(self.ctx.sent, [])
+
+    def test_draw_request_is_left_to_the_image_plugin(self):
+        self.ctx.active.add("image_gen")
+        self.plugin.on_message(self.mention("画一只戴墨镜的橘猫"), self.ctx)
+        self.assertEqual(self.ctx.client.calls, [])
+        self.assertEqual(self.ctx.sent, [])
+
+    def test_draw_request_still_gets_a_chat_reply_when_image_plugin_is_off(self):
+        self.plugin.on_message(self.mention("画一只戴墨镜的橘猫"), self.ctx)
+        self.assertEqual(len(self.ctx.client.calls), 1)
+        self.assertEqual(len(self.ctx.sent), 1)
 
     def test_mention_without_picture_stays_text_only(self):
         self.plugin.on_message(self.mention(), self.ctx)

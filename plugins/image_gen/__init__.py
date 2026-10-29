@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 
+from wxbot_framework.image_intent import wants_image
 from wxbot_framework.mentions import strip_at_labels
 
 from .provider import ImageGenCancelled, ImageGenError, ImageProvider
@@ -75,8 +76,8 @@ class Plugin:
                 not self._current(message, ctx)):
             return
         prompt = strip_at_labels(message.text)
-        if not prompt:
-            self._say(message, ctx, '在群里艾特我并附上画面描述，例如：@我 一只戴墨镜的橘猫坐在窗台上')
+        if not wants_image(prompt):
+            # 普通聊天或看图提问交给 mention_chat，两个插件不抢同一条艾特。
             return
         if len(prompt) > self.max_prompt:
             self._say(message, ctx, f'描述请控制在 {self.max_prompt} 字以内。')

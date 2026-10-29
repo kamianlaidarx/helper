@@ -2,9 +2,11 @@
 import time
 
 from wxbot_framework.dialogue import Dialogue
+from wxbot_framework.image_intent import wants_image
 from wxbot_framework.images import image_data_url
 from wxbot_framework.llm import LLMError
 from wxbot_framework.members import SnapshotExpired
+from wxbot_framework.mentions import strip_at_labels
 from wxbot_framework.personality import personality_text
 from wxbot_framework.speech import deliver_model_reply
 
@@ -32,6 +34,9 @@ class Plugin:
         if (message.type != 1 or "WXBOT_AT_CHAT_PROBE" in message.text or
                 message.data.get("bot_generated") or not message.data.get("is_at_self") or
                 self.members.account not in message.data.get("at_members", ())):
+            return
+        if ctx.plugin_is_active("image_gen") and wants_image(strip_at_labels(message.text)):
+            # 这条艾特是要画图，交给 image_gen 插件，避免文本回复和图片同时出现。
             return
         personality = ctx.personality(message)
         try:

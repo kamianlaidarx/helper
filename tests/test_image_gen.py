@@ -245,7 +245,7 @@ class PluginTests(unittest.TestCase):
     def assert_is_generate_prompt(prompt):
         assert prompt and not prompt.startswith('@')
 
-    def send(self, text='@机器人\u2005一只戴墨镜的橘猫', **kwargs):
+    def send(self, text='@机器人\u2005画一只戴墨镜的橘猫', **kwargs):
         values = {'text': text, 'chat_id': '123@chatroom', 'sender_id': 'wxid_test_sender', 'is_group': True,
                   'session_id': 'one', 'received_at': self.now,
                   'data': {'is_at_self': True, 'at_members': ('wxid_test_robot',)}}
@@ -255,7 +255,7 @@ class PluginTests(unittest.TestCase):
     def test_mention_sends_image_then_removes_temp_file(self):
         self.send()
         self.assertEqual([row[0] for row in self.ctx.sent], ['text', 'image'])
-        self.assertEqual(self.plugin.provider.generate.call_args.args[0], '一只戴墨镜的橘猫')
+        self.assertEqual(self.plugin.provider.generate.call_args.args[0], '画一只戴墨镜的橘猫')
         self.assertFalse(self.ctx.sent[1][2].exists())
         self.assertEqual(list(self.plugin.directory.iterdir()), [])
 
@@ -263,18 +263,25 @@ class PluginTests(unittest.TestCase):
         cases = [{'chat_id': '789@chatroom'}, {'is_group': False}, {'is_self': True},
                  {'data': {'bot_generated': True, 'is_at_self': True}},
                  {'data': {'at_members': ('wxid_test_robot',)}},
-                 {'data': {}}, {'received_at': 10.0}, {'type': 3}]
+                 {'data': {}}, {'received_at': 10.0}, {'type': 3},
+                 {'text': '@机器人\u2005今天天气不错'}, {'text': '@机器人\u2005图里是什么'},
+                 {'text': '@机器人\u2005'}, {'text': '@机器人\u2005帮我看看这张照片'}]
         for values in cases:
             self.send(**values)
         self.assertEqual(self.plugin.provider.generate.call_count, 0)
         self.assertEqual(self.ctx.sent, [])
 
-    def test_empty_and_overlong_prompts_get_usage_without_generating(self):
-        self.send(text='@机器人\u2005')
-        self.send(text='@机器人\u2005' + '猫' * 400)
+    def test_overlong_prompt_gets_usage_without_generating(self):
+        self.send(text='@机器人\u2005画' + '猫' * 400)
         self.assertEqual(self.plugin.provider.generate.call_count, 0)
-        self.assertEqual([row[0] for row in self.ctx.sent], ['text', 'text'])
-        self.assertIn('300', self.ctx.sent[1][2])
+        self.assertEqual([row[0] for row in self.ctx.sent], ['text'])
+        self.assertIn('300', self.ctx.sent[0][2])
+
+    def test_requests_phrased_as_wishes_do_generate(self):
+        self.send(text='@机器人\u2005想看你睡觉的照片')
+        self.now += 21
+        self.send(text='@机器人\u2005来张猫的图')
+        self.assertEqual(self.plugin.provider.generate.call_count, 2)
 
     def test_cooldown_is_per_chat_and_uses_arrival_time(self):
         self.send()
