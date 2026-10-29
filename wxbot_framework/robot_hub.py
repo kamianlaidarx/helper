@@ -366,5 +366,10 @@ class RobotHub:
             workers = list(self.workers.values())
         threads = [threading.Thread(target=worker.close) for worker in workers]
         for thread in threads: thread.start()
-        for thread in threads: thread.join()
-        self.stopped_event.set()
+        try:
+            for thread in threads: thread.join()
+        except KeyboardInterrupt:
+            # 停止请求已经发给每个工作进程；再按一次 Ctrl+C 就不再等待，直接退出。
+            pass
+        finally:
+            self.stopped_event.set()

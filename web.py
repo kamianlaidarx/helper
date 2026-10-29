@@ -55,7 +55,11 @@ def main():
         if server is not None:
             server.server_close()
         if controller is not None:
-            controller.close()
+            try:
+                controller.close()
+            except KeyboardInterrupt:
+                # 停止后再按一次 Ctrl+C：不再等待工作进程收尾，直接退出。
+                pass
 
 
 def worker_main(workspace):
@@ -82,7 +86,10 @@ def worker_main(workspace):
                 server.handle_request()
     finally:
         server.server_close()
-        controller.close()
+        try:
+            controller.close()
+        except KeyboardInterrupt:
+            pass
     return 0
 
 
