@@ -89,6 +89,13 @@
       "cooldown_seconds": 10,
       "timeout_seconds": 12,
       "max_image_bytes": 10485760
+    },
+    "image_gen": {
+      "enabled": false,
+      "acknowledge": true,
+      "image_config_file": "image_config.json",
+      "cooldown_seconds": 20,
+      "max_prompt_length": 300
     }
   }
 }

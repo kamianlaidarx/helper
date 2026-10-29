@@ -1,0 +1,13 @@
+{
+  "api": "v1",
+  "default_enabled": false,
+  "description": "群内艾特机器人并附描述，调用生图模型生成图片并发送",
+  "requires": [
+    "group.text.receive",
+    "group.text.send",
+    "image.send"
+  ],
+  "message_types": [
+    1
+  ]
+}

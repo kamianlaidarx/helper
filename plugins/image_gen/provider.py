@@ -1,0 +1,324 @@
+"""生图接口适配层：只发提示词，不回传账号或群号，不记录密钥与响应正文。"""
+from __future__ import annotations
+
+import base64
+from io import BytesIO
+import ipaddress
+import json
+import math
+from pathlib import Path
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import warnings
+
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+MAX_JSON_BYTES = 1024 * 1024
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_PIXELS = 20_000_000
+FORMATS = ("JPEG", "PNG", "WEBP", "GIF", "BMP")
+
+
+class ImageGenError(RuntimeError):
+    """只含可公开的说明，不附带 URL、响应正文或密钥。"""
+
+
+class ImageGenCancelled(ImageGenError):
+    pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _check_base(value):
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        raise ValueError("生图 base_url 无效") from None
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("生图 base_url 应为不含认证信息的接口地址")
+    local = parsed.hostname == "localhost"
+    if not local:
+        try:
+            local = ipaddress.ip_address(parsed.hostname).is_loopback
+        except ValueError:
+            pass
+    if not (parsed.scheme == "https" or (parsed.scheme == "http" and local)):
+        raise ValueError("生图 base_url 必须是 HTTPS；本机回环地址可使用 HTTP")
+    return value.rstrip("/")
+
+
+def normalize(raw):
+    """转成微信可发送的 JPEG：限像素、按 EXIF 转正、限单张字节。"""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(raw)) as probe:
+                if probe.format not in FORMATS or not 0 < probe.width * probe.height <= MAX_PIXELS:
+                    raise ImageGenError("生图结果格式或尺寸不受支持")
+                probe.verify()
+            with Image.open(BytesIO(raw)) as source:
+                source.seek(0)
+                rgba = ImageOps.exif_transpose(source).convert("RGBA")
+                flat = Image.new("RGB", rgba.size, "white")
+                flat.paste(rgba, (0, 0), rgba.getchannel("A"))
+                output = BytesIO()
+                flat.save(output, format="JPEG", quality=92)
+        value = output.getvalue()
+        if not 0 < len(value) <= MAX_IMAGE_BYTES:
+            raise ImageGenError("生图结果超过 20 MiB，无法发送")
+        return value
+    except ImageGenError:
+        raise
+    except (OSError, ValueError, SyntaxError, UnidentifiedImageError,
+            Image.DecompressionBombError, Image.DecompressionBombWarning):
+        raise ImageGenError("生图模型未返回有效图片") from None
+
+
+def _data_url_bytes(value):
+    """解析 data:image/...;base64, 形式的图片数据。"""
+    header, _, data = value.partition(",")
+    if not data or not header.lower().startswith("data:image/") or ";base64" not in header.lower():
+        raise ImageGenError("生图接口返回的图片数据无效")
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        raise ImageGenError("生图接口返回的 base64 图片无效") from None
+    if not 0 < len(raw) <= MAX_IMAGE_BYTES:
+        raise ImageGenError("生图结果超过 20 MiB，无法发送")
+    return raw
+
+
+class ImageProvider:
+    def __init__(self, options):
+        if not isinstance(options, dict):
+            raise ValueError("生图配置必须是 JSON 对象")
+        self.kind = options.get("provider", "openai")
+        if self.kind not in ("openai", "dashscope", "openai-chat"):
+            raise ValueError("生图配置 provider 应为 openai、dashscope 或 openai-chat")
+        key = options.get("api_key", "")
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("请在生图配置文件中填写 api_key")
+        self._key = key.strip()
+        model = options.get("model", "")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("生图配置 model 不能为空")
+        self.model = model.strip()
+        self.size = options.get("size", "1024x1024")
+        if not isinstance(self.size, str) or not 3 <= len(self.size) <= 16 or any(ch.isspace() for ch in self.size):
+            raise ValueError("生图配置 size 应为 1024x1024 形式的字符串")
+        base = options.get("base_url", "")
+        if not isinstance(base, str):
+            raise ValueError("生图配置 base_url 必须是接口地址字符串")
+        self.base_url = _check_base(base)
+        timeout = options.get("timeout_seconds", 60)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 1 <= timeout <= 120:
+            raise ValueError("生图配置 timeout_seconds 应为 1–120 秒")
+        self.timeout = timeout
+        # 显式配置时才发送 response_format：部分模型（如 gpt-image-1）不接受该字段。
+        self.response_format = options.get("response_format")
+        if self.response_format not in (None, "b64_json", "url"):
+            raise ValueError("生图配置 response_format 应为 b64_json、url 或不填")
+        self.opener = urllib.request.build_opener(_NoRedirect())
+
+    @classmethod
+    def from_file(cls, path):
+        path = Path(path)
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            raise ValueError(f"未找到生图配置文件 {path.name}；请从 image_config.example.json 复制一份") from None
+        return cls(json.loads(text))
+
+    def _call(self, url, payload, current, *, method="POST", auth=True,
+              extra_headers=None, limit=MAX_JSON_BYTES):
+        if not current():
+            raise ImageGenCancelled("生图请求已取消")
+        headers = {"User-Agent": "helper-image-gen", "Accept-Encoding": "identity",
+                   "Accept": "application/json" if auth else "image/*"}
+        if auth:
+            headers["Authorization"] = "Bearer " + self._key
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers.update(extra_headers or {})
+        deadline = time.monotonic() + self.timeout
+        retries = 0
+        for _ in range(4):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ImageGenError("生图请求超时")
+            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            connected = False
+            try:
+                with self.opener.open(request, timeout=remaining) as response:
+                    connected = True
+                    length = response.headers.get("Content-Length")
+                    if length is not None and (not length.isdecimal() or int(length) > limit):
+                        raise ImageGenError("生图响应超过大小限制")
+                    blocks, total = [], 0
+                    while True:
+                        if not current():
+                            raise ImageGenCancelled("生图请求已取消")
+                        chunk = response.read(min(64 * 1024, limit - total + 1))
+                        if not chunk:
+                            break
+                        blocks.append(chunk)
+                        total += len(chunk)
+                        if total > limit:
+                            raise ImageGenError("生图响应超过大小限制")
+                    return b"".join(blocks)
+            except urllib.error.HTTPError as error:
+                code = error.code
+                detail = self._detail(error)
+                location = error.headers.get("Location") if error.headers else None
+                error.close()
+                # 仅下载图片（GET）时跟随重定向，且目标必须是 HTTPS。
+                if code in (301, 302, 303, 307, 308) and location and method == "GET":
+                    url = urllib.parse.urljoin(url, location)
+                    if urllib.parse.urlsplit(url).scheme != "https":
+                        raise ImageGenError("生图图片地址不在允许范围") from None
+                    continue
+                raise ImageGenError(f"生图接口 HTTP {code}；请核对密钥、余额和模型名{detail}") from None
+            except (OSError, TimeoutError, urllib.error.URLError):
+                # 连不上（握手被重置、DNS 抖动）就重试；已经开始读响应体则不再重试，避免重复计费。
+                if not connected and retries < 2:
+                    retries += 1
+                    if not current():
+                        raise ImageGenCancelled("生图请求已取消") from None
+                    time.sleep(0.5)
+                    continue
+                raise ImageGenError("生图接口连接失败或超时") from None
+        raise ImageGenError("生图接口重定向次数过多")
+
+    def _detail(self, error):
+        """把服务端的错误说明带出来，便于区分"密钥不对"和"这个模型没开通"。"""
+        try:
+            body = error.read(4096)
+        except (OSError, ValueError, AttributeError):
+            return ""
+        try:
+            parsed = json.loads(body)
+        except (ValueError, RecursionError):
+            return ""
+        message = parsed.get("error") if isinstance(parsed, dict) else None
+        if isinstance(message, dict):
+            message = message.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return ""
+        text = " ".join(message.split())[:120]
+        if self._key in text:
+            return ""
+        return "（服务端：" + text + "）"
+
+    def _json(self, url, payload, current, **kwargs):
+        raw = self._call(url, payload, current, **kwargs)
+        try:
+            return json.loads(raw)
+        except (ValueError, RecursionError):
+            raise ImageGenError("生图接口响应不是有效 JSON") from None
+
+    def _image(self, url, current):
+        if not isinstance(url, str):
+            raise ImageGenError("生图图片地址无效")
+        try:
+            parsed = urllib.parse.urlsplit(url)
+        except ValueError:
+            raise ImageGenError("生图图片地址无效") from None
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ImageGenError("生图图片地址不在允许范围")
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            pass
+        else:
+            if not address.is_global:
+                raise ImageGenError("生图图片地址不在允许范围")
+        # 下载 CDN 图片时不携带 API 密钥。
+        return self._call(url, None, current, method="GET", auth=False, limit=MAX_IMAGE_BYTES)
+
+    def generate(self, prompt, *, current=lambda: True):
+        """返回可发送的 JPEG 字节；失败抛 ImageGenError，取消抛 ImageGenCancelled。"""
+        if self.kind == "openai":
+            raw = self._openai(prompt, current)
+        elif self.kind == "dashscope":
+            raw = self._dashscope(prompt, current)
+        else:
+            raw = self._chat_image(prompt, current)
+        return normalize(raw)
+
+    def _openai(self, prompt, current):
+        body = {"model": self.model, "prompt": prompt, "n": 1, "size": self.size}
+        if self.response_format:
+            body["response_format"] = self.response_format
+        result = self._json(self.base_url + "/images/generations", body, current)
+        try:
+            item = result["data"][0]
+        except (KeyError, IndexError, TypeError):
+            raise ImageGenError("生图接口未返回图片") from None
+        if not isinstance(item, dict):
+            raise ImageGenError("生图接口未返回图片")
+        if item.get("b64_json"):
+            try:
+                return base64.b64decode(item["b64_json"], validate=True)
+            except (ValueError, TypeError):
+                raise ImageGenError("生图接口返回的 base64 图片无效") from None
+        if item.get("url"):
+            return self._image(item["url"], current)
+        raise ImageGenError("生图接口未返回可用图片")
+
+    def _chat_image(self, prompt, current):
+        """有些网关只在对话接口里出图（如 gemini 的 *-image 模型），图片放在 message.images。"""
+        body = {"model": self.model, "messages": [{"role": "user", "content": prompt}]}
+        result = self._json(self.base_url + "/chat/completions", body, current)
+        try:
+            images = result["choices"][0]["message"]["images"]
+        except (KeyError, IndexError, TypeError):
+            raise ImageGenError("生图接口未返回图片") from None
+        if not isinstance(images, list) or not images:
+            raise ImageGenError("生图接口未返回图片")
+        for item in images:
+            url = item.get("image_url") if isinstance(item, dict) else None
+            if isinstance(url, dict):
+                url = url.get("url")
+            if isinstance(url, str) and url.startswith("data:image/"):
+                return _data_url_bytes(url)
+            if isinstance(url, str) and url.startswith("https://"):
+                return self._image(url, current)
+        raise ImageGenError("生图接口未返回可用图片")
+
+    def _dashscope(self, prompt, current):
+        endpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+        payload = {"model": self.model, "input": {"prompt": prompt},
+                   "parameters": {"size": self.size, "n": 1}}
+        task = self._json(endpoint, payload, current, extra_headers={"X-DashScope-Async": "enable"})
+        try:
+            task_id = task["output"]["task_id"]
+        except (KeyError, TypeError):
+            raise ImageGenError("生图接口未返回任务号") from None
+        if not isinstance(task_id, str) or not task_id:
+            raise ImageGenError("生图接口未返回任务号")
+        poll = "https://dashscope.aliyuncs.com/api/v1/tasks/" + urllib.parse.quote(task_id, safe="")
+        deadline = time.monotonic() + self.timeout
+        while True:
+            time.sleep(1.5)
+            if not current():
+                raise ImageGenCancelled("生图请求已取消")
+            if time.monotonic() > deadline:
+                raise ImageGenError("生图任务等待超时")
+            result = self._json(poll, None, current, method="GET")
+            output = result.get("output") if isinstance(result, dict) else None
+            if not isinstance(output, dict):
+                raise ImageGenError("生图接口响应格式不正确")
+            if output.get("task_status") == "SUCCEEDED":
+                try:
+                    return self._image(output["results"][0]["url"], current)
+                except (KeyError, IndexError, TypeError):
+                    raise ImageGenError("生图任务未返回图片") from None
+            if output.get("task_status") == "FAILED":
+                raise ImageGenError("生图任务失败，请更换描述后重试")

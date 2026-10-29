@@ -3,6 +3,7 @@
 /members_config.json
 /llm_config.json
 /tts_config.json
+/image_config.json
 .env
 .env.*
 !.env.example
