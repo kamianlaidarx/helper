@@ -374,6 +374,15 @@ class TextClient:
 
 
 class DialoguePlainTests(unittest.TestCase):
+
+    def test_plain_reply_does_not_send_a_json_envelope(self):
+        client = TextClient("这是一张麻将牌的照片")
+        Dialogue(client).reply(Snapshot())
+        system, user, _ = client.calls[0]
+        self.assertNotIn("{", user)
+        self.assertIn("图里是什么", user)
+        self.assertIn("不要输出分析过程", user)
+        self.assertIn("最多 150 字", system)
     def test_plain_reply_asks_for_prose_instead_of_json(self):
         client = TextClient("  图里从左到右是红圆、绿圆、蓝方  ")
         self.assertEqual(Dialogue(client).reply(Snapshot()), "图里从左到右是红圆、绿圆、蓝方")

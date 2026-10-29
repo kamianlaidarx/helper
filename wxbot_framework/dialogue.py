@@ -39,6 +39,16 @@ def _plain(text):
 
 
 
+def _plain_user(snapshot, rows):
+    """纯文本模式用自然语言组织上下文：JSON 信封会让模型以为要继续写 JSON。"""
+    lines = [f"{row['time']} {snapshot.speaker_name}：{row['text']}" for row in rows]
+    history = "\n".join(lines) if lines else "（没有历史消息）"
+    current = strip_at_labels(snapshot.current) or "（只艾特了你，没有说别的）"
+    return (f"以下是他此前在本群说过的话，按时间顺序，只用来理解语境：\n{history}\n\n"
+            f"现在（{snapshot.day}）他艾特你说：{current}\n"
+            "直接回复他这句话，不要复述上面的历史，不要输出分析过程或思维步骤。")
+
+
 class Dialogue:
     def __init__(self, client):
         self.client = client
@@ -47,9 +57,11 @@ class Dialogue:
         previous = [{"time": datetime.fromisoformat(row["received_at"]).astimezone(BEIJING).strftime("%H:%M:%S"),
                      "text": strip_at_labels(row["text"])} for row in snapshot.messages]
         system = _system_for(self.client)
-        user = json.dumps({"name": snapshot.speaker_name, "date": snapshot.day, "previous": previous,
-                           "current": strip_at_labels(snapshot.current)}, ensure_ascii=False)
-        if getattr(self.client, "reply_format", "json") == "text":
+        plain = getattr(self.client, "reply_format", "json") == "text"
+        user = (_plain_user(snapshot, previous) if plain else
+                json.dumps({"name": snapshot.speaker_name, "day": snapshot.day, "previous": previous,
+                            "current": strip_at_labels(snapshot.current)}, ensure_ascii=False))
+        if plain:
             text = (self.client.complete_text(system, user) if image is None
                     else self.client.complete_text(system, user, image=image))
             reply = _plain(text)
