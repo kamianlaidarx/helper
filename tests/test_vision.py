@@ -396,3 +396,49 @@ class DialoguePlainTests(unittest.TestCase):
         for bad in ("   ", "坏\x07字", "长" * 601):
             with self.subTest(bad=bad[:6]), self.assertRaises(LLMError):
                 Dialogue(TextClient(bad)).reply(Snapshot())
+
+class PersonalityWrapperTests(unittest.TestCase):
+    """人格包装层不能挡住图片和纯文本回复：真实链路里 mention_chat 拿到的就是它。"""
+
+    def test_reply_format_follows_the_wrapped_client(self):
+        from wxbot_framework.personality import PersonalityLLM, PersonalityState
+        inner = TextClient("图里是一只橘猫")
+        client = PersonalityLLM(inner, PersonalityState(room="1@chatroom"), current=lambda: True)
+        self.assertEqual(client.reply_format, "text")
+        self.assertEqual(Dialogue(client).reply(Snapshot(), image="data:image/jpeg;base64,AAA"), "图里是一只橘猫")
+        system, _, image = inner.calls[0]
+        self.assertEqual(image, "data:image/jpeg;base64,AAA")
+        self.assertIn("当前人格", system)
+
+    def test_json_mode_client_still_receives_the_image(self):
+        from wxbot_framework.personality import PersonalityLLM, PersonalityState
+        seen = []
+
+        class JsonClient:
+            reply_format = "json"
+
+            def complete_json(self, system, user, image=None):
+                seen.append((system, user, image))
+                return {"reply": "图里是一只橘猫"}
+
+        client = PersonalityLLM(JsonClient(), PersonalityState(room="1@chatroom", name="嘴臭"), current=lambda: True)
+        self.assertEqual(Dialogue(client).reply(Snapshot(), image="data:image/jpeg;base64,AAA"), "图里是一只橘猫")
+        self.assertEqual(seen[0][2], "data:image/jpeg;base64,AAA")
+        self.assertIn("当前人格", seen[0][0])
+
+    def test_switch_during_the_request_discards_the_result(self):
+        from wxbot_framework.personality import PersonalityExpired, PersonalityLLM, PersonalityState
+        calls = []
+
+        class Switching(TextClient):
+            def complete_text(self, system, user, image=None):
+                calls.append(1)
+                alive[0] = False
+                return super().complete_text(system, user, image)
+
+        alive = [True]
+        client = PersonalityLLM(Switching("图里是一只橘猫"), PersonalityState(room="1@chatroom"),
+                                current=lambda: alive[0])
+        with self.assertRaises(PersonalityExpired):
+            client.complete_text("系统", "问题", image="data:image/jpeg;base64,AAA")
+        self.assertEqual(calls, [1])
