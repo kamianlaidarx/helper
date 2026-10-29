@@ -442,3 +442,17 @@ class PersonalityWrapperTests(unittest.TestCase):
         with self.assertRaises(PersonalityExpired):
             client.complete_text("系统", "问题", image="data:image/jpeg;base64,AAA")
         self.assertEqual(calls, [1])
+    def test_truncated_plain_reply_keeps_the_finished_sentences(self):
+        long_text = "这张图里有三只猫。" * 60
+        body = {"choices": [{"finish_reason": "length", "message": {"content": long_text}}]}
+        with patch("wxbot_framework.llm.urlopen", return_value=BytesIO(json.dumps(body).encode())):
+            reply = LLMClient({"api_key": "k"}).complete_text("系统", "用户")
+        self.assertLessEqual(len(reply), 600)
+        self.assertTrue(reply.endswith("。"))
+        self.assertTrue(long_text.startswith(reply))
+
+    def test_truncated_json_reply_still_fails(self):
+        body = {"choices": [{"finish_reason": "length", "message": {"content": '{"reply": "说到一半'}}]}
+        with patch("wxbot_framework.llm.urlopen", return_value=BytesIO(json.dumps(body).encode())):
+            with self.assertRaisesRegex(LLMError, "截断"):
+                LLMClient({"api_key": "k"}).complete_json("系统", "用户")

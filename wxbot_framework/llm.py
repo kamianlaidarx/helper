@@ -15,6 +15,21 @@ class LLMError(RuntimeError):
     pass
 
 
+SENTENCE_MARKS = ("。", "！", "？", "…", "；", "\n", "!", "?", ".")
+
+
+def _cut_sentence(text, limit=600):
+    """把过长的正文收在不超过 limit 的最后一个句子边界上。"""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    for mark in SENTENCE_MARKS:
+        index = head.rfind(mark)
+        if index >= limit // 3:
+            return head[:index + 1].strip()
+    return head.strip()
+
+
 class LLMClient:
     def __init__(self, options):
         if not isinstance(options, dict):
@@ -125,7 +140,11 @@ class LLMClient:
                 finish = choice.get("finish_reason")
                 message = choice["message"]
                 if finish == "length":
-                    raise LLMError("大模型响应被截断，请增加 max_tokens")
+                    if structured:
+                        raise LLMError("大模型响应被截断，请增加 max_tokens")
+                    # 纯文本回复被截断时保留已拿到的部分，按句子边界收尾，好过整条丢掉。
+                    logging.getLogger("LLM").warning("大模型正文被截断，按句子边界截取")
+                    return _cut_sentence(str(message.get("content") or "").strip()), fenced_ok
                 if finish == "content_filter" or message.get("refusal"):
                     raise LLMError("大模型接口未提供可用正文，请检查服务商的内容限制")
                 if finish in ("tool_calls", "function_call") or message.get("tool_calls") or message.get("function_call"):
