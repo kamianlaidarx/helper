@@ -70,4 +70,9 @@ desktop.ini
 /_*.py
 /_probe_out.jpg
 /.pytest_cache/
-/.impeccable/
+
+# Local edit backups
+*.bak
+*.bak[0-9]*
+*.bak_*
+*.bak_stage*
