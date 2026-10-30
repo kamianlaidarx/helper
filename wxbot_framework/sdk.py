@@ -554,11 +554,26 @@ class PluginContext:
         from .personality import PersonalityState
         return self._members.personality(message.chat_id) if self._members is not None else PersonalityState(message.chat_id)
 
-    def llm_for(self, message, *, personality=None):
-        from .personality import PersonalityLLM
+    def speaker(self, message):
+        """当前发言者的稳定身份：is_owner 只看群配置的 owner_ids 白名单，昵称不参与判断。"""
+        from .personality import Speaker
+        sender_id = message.sender_id or ""
+        is_owner = bool(self._members is not None and sender_id and
+                        self._members.is_owner(message.chat_id, sender_id))
+        name = message.data.get("sender_wechat_name") or ""
+        if self._members is not None and sender_id and message.is_group:
+            member = self._members.find_by_wxid(sender_id, message.chat_id)
+            if member is not None:
+                name = member.name
+        return Speaker(speaker_id=sender_id, name=name, kind="human", is_owner=is_owner)
+
+    def llm_for(self, message, *, personality=None, speaker=None):
+        from .personality import PersonalityLLM, select_few_shots
         state = personality if personality is not None else self.personality(message)
+        few_shots = select_few_shots(state.name, speaker) if speaker is not None else None
         return PersonalityLLM(self.llm, state, current=lambda: self._members is None or
-                              self._members.personality_is_current(state))
+                              self._members.personality_is_current(state),
+                              speaker=speaker, few_shots=few_shots)
 
     def personality_guard(self, state):
         return self._members.personality_delivery_guard(state) if self._members is not None else nullcontext()

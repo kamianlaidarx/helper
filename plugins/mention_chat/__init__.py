@@ -11,8 +11,9 @@ from wxbot_framework.personality import personality_text
 from wxbot_framework.speech import deliver_model_reply
 
 IMAGE_WINDOW_SECONDS = 300
-ROOM_IMAGE_SECONDS = 60
+ROOM_IMAGE_SECONDS = 600
 MAX_REMEMBERED = 32
+MAX_IMAGES = 3
 
 
 class Plugin:
@@ -23,7 +24,7 @@ class Plugin:
         ctx.llm  # 启动时核对配置，不请求接口。
         self.images = {}
         self.latest = {}
-        self.pending_image = None
+        self.pending_images = None
 
     def on_message(self, message, ctx):
         if message.is_self or not message.is_group or message.chat_id not in self.members.groups:
@@ -42,11 +43,11 @@ class Plugin:
         try:
             snapshot = self.members.conversation_snapshot(message)
             guard = lambda: ctx.response_guard(snapshot, personality)
-            self.pending_image = self.recent_image(message)
+            self.pending_images = self.recent_images(message)
             try:
                 self.reply_to_member(message, ctx, snapshot, personality, guard)
             finally:
-                attached, self.pending_image = bool(self.pending_image), None
+                attached, self.pending_images = bool(self.pending_images), None
             ctx.logger.info("艾特对话完成：room=%s persona=%s context=%d image=%s", message.chat_id,
                             personality.name, len(snapshot.messages), attached)
         except SnapshotExpired:
@@ -59,42 +60,53 @@ class Plugin:
                 pass
 
     def remember(self, message):
-        """记住上一张可用的图，只留路径和本地到达时间，不落库。"""
+        """记住最近几张可用的图，只留路径和本地到达时间，不落库。"""
         if message.data.get("bot_generated") or message.data.get("image_status") not in (None, "ready"):
             return
         path = message.image_path
         if not path:
             return
         stamp = time.monotonic()
-        self.images[(message.chat_id, message.sender_id)] = (path, stamp)
-        self.latest[message.chat_id] = (path, stamp)
+        self.images.setdefault((message.chat_id, message.sender_id), []).append((path, stamp))
+        self.latest.setdefault(message.chat_id, []).append((path, stamp))
+        for store, window in ((self.images, IMAGE_WINDOW_SECONDS), (self.latest, ROOM_IMAGE_SECONDS)):
+            for key in list(store):
+                rows = [row for row in store[key] if 0 <= stamp - row[1] <= window]
+                if rows:
+                    store[key] = rows[-MAX_IMAGES:]
+                else:
+                    store.pop(key, None)
         while len(self.images) > MAX_REMEMBERED:
             self.images.pop(next(iter(self.images)))
         while len(self.latest) > MAX_REMEMBERED:
             self.latest.pop(next(iter(self.latest)))
 
-    def recent_image(self, message):
-        """同一个人刚发的图优先；其次是本群 60 秒内的最后一张图。"""
+    def recent_images(self, message):
+        """同一个人刚发的图优先；其次是本群 10 分钟内的最后几张图，最多 MAX_IMAGES 张。"""
         now = time.monotonic()
         candidates = (((message.chat_id, message.sender_id), self.images, IMAGE_WINDOW_SECONDS),
                       (message.chat_id, self.latest, ROOM_IMAGE_SECONDS))
         for key, store, window in candidates:
-            row = store.get(key)
-            if row is None:
-                continue
-            path, stamp = row
-            if not 0 <= now - stamp <= window:
+            rows = [row for row in store.get(key) or [] if 0 <= now - row[1] <= window]
+            if not rows:
                 store.pop(key, None)
                 continue
-            try:
-                return image_data_url(path)
-            except ValueError:
-                store.pop(key, None)
+            store[key] = rows
+            urls = []
+            for path, _stamp in rows[-MAX_IMAGES:]:
+                try:
+                    urls.append(image_data_url(path))
+                except ValueError:
+                    continue
+            if urls:
+                return urls
+            store.pop(key, None)
         return None
 
     def reply_to_member(self, message, ctx, snapshot, personality, delivery_guard):
         """上下文已准备好，在这里生成并发送给群友的回复。"""
-        reply = personality_text(Dialogue(ctx.llm_for(message, personality=personality)).reply(
-            snapshot, image=self.pending_image), personality.name)
+        reply = personality_text(Dialogue(ctx.llm_for(
+            message, personality=personality, speaker=ctx.speaker(message))).reply(
+            snapshot, image=self.pending_images), personality.name)
         display = self.members.display_name(message.sender_id, message.chat_id) or snapshot.speaker_name
         deliver_model_reply(ctx, message, reply, display_name=display, delivery_guard=delivery_guard)

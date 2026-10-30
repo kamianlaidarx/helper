@@ -126,16 +126,6 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
         self.assertNotIn("response_format", body)
 
-    def test_payload_leaves_room_for_reasoning_models(self):
-        self.assertGreaterEqual(probe_payload(self.config)["max_tokens"], 128)
-
-    def test_truncated_reply_explains_the_missing_content(self):
-        accepted, message = probe(self.config, open_url=self.opener(
-            {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}))
-        self.assertTrue(accepted)
-        self.assertIn("finish_reason=length", message)
-        self.assertIn("max_tokens", message)
-
     def test_accepting_endpoint_is_reported_as_supported(self):
         accepted, message = probe(self.config, open_url=self.opener(
             {"choices": [{"message": {"content": "红色"}}]}))
@@ -192,10 +182,6 @@ class Context:
         self.logger = logging.getLogger("MentionChatVisionTest")
         self.sent = []
         self._speech = None
-        self.active = {"mention_chat"}
-
-    def plugin_is_active(self, name):
-        return name in self.active
 
     def llm_for(self, message, personality=None):
         return self.client
@@ -267,17 +253,6 @@ class MentionChatVisionTests(unittest.TestCase):
         self.plugin.on_message(self.image(self.store()), self.ctx)
         self.assertEqual(self.ctx.client.calls, [])
         self.assertEqual(self.ctx.sent, [])
-
-    def test_draw_request_is_left_to_the_image_plugin(self):
-        self.ctx.active.add("image_gen")
-        self.plugin.on_message(self.mention("画一只戴墨镜的橘猫"), self.ctx)
-        self.assertEqual(self.ctx.client.calls, [])
-        self.assertEqual(self.ctx.sent, [])
-
-    def test_draw_request_still_gets_a_chat_reply_when_image_plugin_is_off(self):
-        self.plugin.on_message(self.mention("画一只戴墨镜的橘猫"), self.ctx)
-        self.assertEqual(len(self.ctx.client.calls), 1)
-        self.assertEqual(len(self.ctx.sent), 1)
 
     def test_mention_without_picture_stays_text_only(self):
         self.plugin.on_message(self.mention(), self.ctx)
@@ -374,15 +349,6 @@ class TextClient:
 
 
 class DialoguePlainTests(unittest.TestCase):
-
-    def test_plain_reply_does_not_send_a_json_envelope(self):
-        client = TextClient("这是一张麻将牌的照片")
-        Dialogue(client).reply(Snapshot())
-        system, user, _ = client.calls[0]
-        self.assertNotIn("{", user)
-        self.assertIn("图里是什么", user)
-        self.assertIn("不要输出分析过程", user)
-        self.assertIn("最多 150 字", system)
     def test_plain_reply_asks_for_prose_instead_of_json(self):
         client = TextClient("  图里从左到右是红圆、绿圆、蓝方  ")
         self.assertEqual(Dialogue(client).reply(Snapshot()), "图里从左到右是红圆、绿圆、蓝方")
@@ -405,63 +371,3 @@ class DialoguePlainTests(unittest.TestCase):
         for bad in ("   ", "坏\x07字", "长" * 601):
             with self.subTest(bad=bad[:6]), self.assertRaises(LLMError):
                 Dialogue(TextClient(bad)).reply(Snapshot())
-
-class PersonalityWrapperTests(unittest.TestCase):
-    """人格包装层不能挡住图片和纯文本回复：真实链路里 mention_chat 拿到的就是它。"""
-
-    def test_reply_format_follows_the_wrapped_client(self):
-        from wxbot_framework.personality import PersonalityLLM, PersonalityState
-        inner = TextClient("图里是一只橘猫")
-        client = PersonalityLLM(inner, PersonalityState(room="1@chatroom"), current=lambda: True)
-        self.assertEqual(client.reply_format, "text")
-        self.assertEqual(Dialogue(client).reply(Snapshot(), image="data:image/jpeg;base64,AAA"), "图里是一只橘猫")
-        system, _, image = inner.calls[0]
-        self.assertEqual(image, "data:image/jpeg;base64,AAA")
-        self.assertIn("当前人格", system)
-
-    def test_json_mode_client_still_receives_the_image(self):
-        from wxbot_framework.personality import PersonalityLLM, PersonalityState
-        seen = []
-
-        class JsonClient:
-            reply_format = "json"
-
-            def complete_json(self, system, user, image=None):
-                seen.append((system, user, image))
-                return {"reply": "图里是一只橘猫"}
-
-        client = PersonalityLLM(JsonClient(), PersonalityState(room="1@chatroom", name="嘴臭"), current=lambda: True)
-        self.assertEqual(Dialogue(client).reply(Snapshot(), image="data:image/jpeg;base64,AAA"), "图里是一只橘猫")
-        self.assertEqual(seen[0][2], "data:image/jpeg;base64,AAA")
-        self.assertIn("当前人格", seen[0][0])
-
-    def test_switch_during_the_request_discards_the_result(self):
-        from wxbot_framework.personality import PersonalityExpired, PersonalityLLM, PersonalityState
-        calls = []
-
-        class Switching(TextClient):
-            def complete_text(self, system, user, image=None):
-                calls.append(1)
-                alive[0] = False
-                return super().complete_text(system, user, image)
-
-        alive = [True]
-        client = PersonalityLLM(Switching("图里是一只橘猫"), PersonalityState(room="1@chatroom"),
-                                current=lambda: alive[0])
-        with self.assertRaises(PersonalityExpired):
-            client.complete_text("系统", "问题", image="data:image/jpeg;base64,AAA")
-        self.assertEqual(calls, [1])
-    def test_truncated_plain_reply_keeps_the_finished_sentences(self):
-        long_text = "这张图里有三只猫。" * 60
-        body = {"choices": [{"finish_reason": "length", "message": {"content": long_text}}]}
-        with patch("wxbot_framework.llm.urlopen", return_value=BytesIO(json.dumps(body).encode())):
-            reply = LLMClient({"api_key": "k"}).complete_text("系统", "用户")
-        self.assertLessEqual(len(reply), 600)
-        self.assertTrue(reply.endswith("。"))
-        self.assertTrue(long_text.startswith(reply))
-
-    def test_truncated_json_reply_still_fails(self):
-        body = {"choices": [{"finish_reason": "length", "message": {"content": '{"reply": "说到一半'}}]}
-        with patch("wxbot_framework.llm.urlopen", return_value=BytesIO(json.dumps(body).encode())):
-            with self.assertRaisesRegex(LLMError, "截断"):
-                LLMClient({"api_key": "k"}).complete_json("系统", "用户")

@@ -24,7 +24,7 @@ def sample():
 
 
 def payload(config):
-    return {"model": config["model"], "max_tokens": 256, "stream": False,
+    return {"model": config["model"], "max_tokens": 32, "stream": False,
             "messages": [{"role": "user", "content": [
                 {"type": "text", "text": "这张图是什么颜色？只回答颜色。"},
                 {"type": "image_url", "image_url": {"url": sample()}}]}]}
@@ -45,12 +45,7 @@ def probe(config, open_url=urlopen):
         return False, f"HTTP {error.code}：{detail[:300]}"
     except (URLError, TimeoutError, OSError) as error:
         return False, f"连接失败或超时：{type(error).__name__}"
-    choice = body["choices"][0]
-    content = choice["message"].get("content")
-    if not content:
-        finish = choice.get("finish_reason")
-        hint = "，输出被 max_tokens 截断" if finish == "length" else ""
-        return True, f"接口接受了图片输入，但没有正文（finish_reason={finish}{hint}）"
+    content = body["choices"][0]["message"].get("content")
     return True, f"接口接受了图片输入，模型回答：{content!r}"
 
 

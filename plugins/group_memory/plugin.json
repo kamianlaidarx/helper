@@ -1,0 +1,10 @@
+{
+  "api": "v1",
+  "description": "旁听群聊并抽取长期记忆，供艾特对话时按相关度召回；不发送任何消息",
+  "message_types": [
+    1
+  ],
+  "requires": [
+    "group.text.receive"
+  ]
+}

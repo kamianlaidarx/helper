@@ -1,4 +1,4 @@
-"""生图接口适配层：只发提示词，不回传账号或群号，不记录密钥与响应正文。"""
+﻿"""生图接口适配层：只发提示词，不回传账号或群号，不记录密钥与响应正文。"""
 from __future__ import annotations
 
 import base64
@@ -15,7 +15,7 @@ import warnings
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-MAX_JSON_BYTES = 1024 * 1024
+MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 20_000_000
 FORMATS = ("JPEG", "PNG", "WEBP", "GIF", "BMP")
@@ -242,14 +242,14 @@ class ImageProvider:
         # 下载 CDN 图片时不携带 API 密钥。
         return self._call(url, None, current, method="GET", auth=False, limit=MAX_IMAGE_BYTES)
 
-    def generate(self, prompt, *, current=lambda: True):
+    def generate(self, prompt, *, image=None, current=lambda: True):
         """返回可发送的 JPEG 字节；失败抛 ImageGenError，取消抛 ImageGenCancelled。"""
         if self.kind == "openai":
             raw = self._openai(prompt, current)
         elif self.kind == "dashscope":
             raw = self._dashscope(prompt, current)
         else:
-            raw = self._chat_image(prompt, current)
+            raw = self._chat_image(prompt, current, image)
         return normalize(raw)
 
     def _openai(self, prompt, current):
@@ -272,9 +272,14 @@ class ImageProvider:
             return self._image(item["url"], current)
         raise ImageGenError("生图接口未返回可用图片")
 
-    def _chat_image(self, prompt, current):
+    def _chat_image(self, prompt, current, image=None):
         """有些网关只在对话接口里出图（如 gemini 的 *-image 模型），图片放在 message.images。"""
-        body = {"model": self.model, "messages": [{"role": "user", "content": prompt}]}
+        if image:
+            content = [{"type": "text", "text": prompt},
+                       {"type": "image_url", "image_url": {"url": image}}]
+        else:
+            content = prompt
+        body = {"model": self.model, "messages": [{"role": "user", "content": content}]}
         result = self._json(self.base_url + "/chat/completions", body, current)
         try:
             images = result["choices"][0]["message"]["images"]

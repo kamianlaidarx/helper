@@ -8,11 +8,15 @@ import time
 import uuid
 
 from wxbot_framework.image_intent import wants_image
+from wxbot_framework.images import image_data_url
 from wxbot_framework.mentions import strip_at_labels
 
 from .provider import ImageGenCancelled, ImageGenError, ImageProvider
 
 STALE_SECONDS = 60
+IMAGE_WINDOW_SECONDS = 300
+ROOM_IMAGE_SECONDS = 60
+MAX_REMEMBERED = 32
 
 
 def _number(value, name, low, high):
@@ -46,10 +50,46 @@ class Plugin:
         self.stopped = threading.Event()
         self.last_request = {}
         self.session_id = None
+        self.images = {}
+        self.latest = {}
 
     def on_unload(self, ctx):
         self.stopped.set()
         self.last_request.clear()
+
+    def remember(self, message):
+        """记住上一张可用的图，只留路径和本地到达时间，不落库。"""
+        if message.data.get("bot_generated") or message.data.get("image_status") not in (None, "ready"):
+            return
+        path = message.image_path
+        if not path:
+            return
+        stamp = time.monotonic()
+        self.images[(message.chat_id, message.sender_id)] = (path, stamp)
+        self.latest[message.chat_id] = (path, stamp)
+        while len(self.images) > MAX_REMEMBERED:
+            self.images.pop(next(iter(self.images)))
+        while len(self.latest) > MAX_REMEMBERED:
+            self.latest.pop(next(iter(self.latest)))
+
+    def recent_image(self, message):
+        """同一个人刚发的图优先；其次是本群 60 秒内的最后一张图。"""
+        now = time.monotonic()
+        candidates = (((message.chat_id, message.sender_id), self.images, IMAGE_WINDOW_SECONDS),
+                      (message.chat_id, self.latest, ROOM_IMAGE_SECONDS))
+        for key, store, window in candidates:
+            row = store.get(key)
+            if row is None:
+                continue
+            path, stamp = row
+            if not 0 <= now - stamp <= window:
+                store.pop(key, None)
+                continue
+            try:
+                return image_data_url(path)
+            except ValueError:
+                store.pop(key, None)
+        return None
 
     def _current(self, message, ctx):
         service = getattr(ctx, '_service', None)
@@ -71,8 +111,13 @@ class Plugin:
                 pass
 
     def on_message(self, message, ctx):
-        if (message.type != 1 or not message.is_group or message.is_self or
-                message.data.get('bot_generated') or not message.data.get('is_at_self') or
+        if not message.is_group or message.is_self or message.data.get('bot_generated'):
+            return
+        if message.type == 3:
+            if message.chat_id in self.members.groups:
+                self.remember(message)
+            return
+        if (message.type != 1 or not message.data.get('is_at_self') or
                 not self._current(message, ctx)):
             return
         prompt = strip_at_labels(message.text)
@@ -98,7 +143,7 @@ class Plugin:
             self._say(message, ctx, '收到，正在生成图片…')
         current = lambda: self._current(message, ctx)
         try:
-            data = self.provider.generate(prompt, current=current)
+            data = self.provider.generate(prompt, image=self.recent_image(message), current=current)
         except ImageGenCancelled:
             return
         except ImageGenError as error:

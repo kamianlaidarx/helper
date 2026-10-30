@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .account import validate_account
 from .config import validate_name
-from .text import validate_mentions
+from .text import validate_mentions, validate_target
 
 
 class MemberError(ValueError):
@@ -54,6 +54,9 @@ class ConversationSnapshot:
     speaker_name: str
     messages: tuple
     current: str
+    # 身份元数据：speaker_id 来自消息 sender_id，is_owner 只看群配置的 owner_ids 白名单。
+    speaker_id: str = ""
+    is_owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,27 @@ class MemberStore:
                 if wxid:
                     ids.add(wxid)
                 self.profiles.append((room, key, name.strip(), display.strip(), wxid, normalized))
+        owners = options.get("owner_ids", {})
+        if not isinstance(owners, dict):
+            raise MemberError("owner_ids 应为 群聊ID→老板微信ID列表 的对象")
+        self._owner_ids = {}
+        for room, owner_ids in owners.items():
+            if room not in self.groups:
+                raise MemberError("owner_ids 里的群必须在 groups 中配置")
+            if not isinstance(owner_ids, list):
+                raise MemberError("owner_ids 每个群应为老板微信 ID 列表")
+            # 白名单只校验 ID 本身：不沿用艾特消息的 1–8 人上限，空列表表示该群暂无老板。
+            try:
+                validate_target(room)
+                for value in owner_ids:
+                    if not isinstance(value, str):
+                        raise ValueError(f"{value!r} 不是微信 ID 字符串")
+                checked = tuple(validate_account(value) for value in owner_ids)
+            except ValueError as error:
+                raise MemberError(f"owner_ids 配置无效：{error}") from error
+            if len(set(checked)) != len(checked):
+                raise MemberError("owner_ids 不能重复")
+            self._owner_ids[room] = frozenset(checked)
         self._lock = threading.RLock()
         self._db = None
         self._closed = False
@@ -372,6 +396,14 @@ class MemberStore:
                 raise PersonalityExpired("人格已切换")
             yield
 
+    def owner_ids(self, room):
+        """该群配置的老板微信 ID 白名单；未配置时为空集，不按昵称猜身份。"""
+        return self._owner_ids.get(room, frozenset())
+
+    def is_owner(self, room, sender_id):
+        """老板身份的唯一来源：群配置的 owner_ids 白名单。"""
+        return bool(sender_id) and sender_id in self.owner_ids(room)
+
     def conversation_snapshot(self, message):
         """当前发言者在本群、当前消息之前的 10 条有效文本，不混入后来消息。"""
         from .summary import CONTROL
@@ -387,6 +419,9 @@ class MemberStore:
                 message.session_id, message.sequence, message.text, start, end)).fetchone()
             if current is None:
                 raise SnapshotExpired("当前消息已被清空或已跨天")
+            # TODO(上游补数据)：这里仍只取当前发言者自己的历史（sender_id=?），
+            # 且没有 JOIN people，因此快照里拿不到其他群友的昵称和其他人的说话内容。
+            # 想做“群级上下文”需要上游把本条之外的消息也交出来（同一 room 的全部 sender）。
             cursor = db.execute("""SELECT * FROM messages WHERE account=? AND room=? AND sender_id=?
                 AND id<? AND received_at>=? AND received_at<? AND bot_generated=0 ORDER BY id DESC""",
                 (self.account, message.chat_id, message.sender_id, current[0], start, end))
@@ -402,7 +437,9 @@ class MemberStore:
                                (self.account, message.chat_id)).fetchone()
             return ConversationSnapshot(message.chat_id, day, state[0], member.name if member else
                                         self.display_name(message.sender_id, message.chat_id) or "群友",
-                                        tuple(reversed(previous)), message.text)
+                                        tuple(reversed(previous)), message.text,
+                                        speaker_id=message.sender_id,
+                                        is_owner=self.is_owner(message.chat_id, message.sender_id))
 
     @contextmanager
     def delivery_guard(self, snapshot):

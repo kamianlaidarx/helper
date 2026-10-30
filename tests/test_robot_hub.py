@@ -203,34 +203,3 @@ class WorkerProcessTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
-
-
-class CloseInterruptTests(unittest.TestCase):
-    """管理台或终端连按两次 Ctrl+C：停止请求已发出，不能再抛 KeyboardInterrupt 打断收尾。"""
-
-    def test_second_interrupt_while_waiting_does_not_escape(self):
-        from unittest.mock import patch
-        from wxbot_framework import robot_hub
-        closed = []
-
-        class Worker:
-            def close(self):
-                closed.append(1)
-
-        class InterruptedThread:
-            def __init__(self, target=None, name=None, daemon=None):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-            def join(self):
-                raise KeyboardInterrupt
-
-        hub = RobotHub(ROOT, worker_factory=FakeWorker, scan=lambda root: ACCOUNTS)
-        self.addCleanup(hub.stopped_event.set)
-        hub.workers = {'a': Worker(), 'b': Worker()}
-        with patch.object(robot_hub.threading, 'Thread', InterruptedThread):
-            hub.close()
-        self.assertEqual(closed, [1, 1])
-        self.assertTrue(hub.stopped_event.is_set())

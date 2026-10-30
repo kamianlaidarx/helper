@@ -108,10 +108,14 @@ class LLMClient:
             system += self.JSON_INSTRUCTION
         body = user
         if vision:
-            if not isinstance(image, str) or not image.startswith("data:image/"):
-                raise ValueError("image 必须是 data:image/... 形式的数据 URL")
-            body = [{"type": "text", "text": user},
-                    {"type": "image_url", "image_url": {"url": image}}]
+            images = image if isinstance(image, (list, tuple)) else [image]
+            if not 1 <= len(images) <= 3:
+                raise ValueError("image 必须是 1~3 张 data:image/... 形式的数据 URL")
+            for item in images:
+                if not isinstance(item, str) or not item.startswith("data:image/"):
+                    raise ValueError("image 必须是 data:image/... 形式的数据 URL")
+            body = [{"type": "text", "text": user}]
+            body += [{"type": "image_url", "image_url": {"url": item}} for item in images]
         payload = {"model": self.model, "messages": [{"role": "system", "content": system},
                                                      {"role": "user", "content": body}],
                    self.token_limit_parameter: self.max_tokens, "stream": False, **self.extra_body}
