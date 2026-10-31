@@ -239,6 +239,35 @@ class ControllerTests(PanelFixture):
                 self.controller.save_configuration({'groups':['123@chatroom'], 'group_names':names})
             self.assertEqual(path.read_bytes(), original)
 
+    def test_owner_ids_round_trip_and_prune_removed_groups(self):
+        path = self.root/'members_config.json'
+        data = read_json(path)
+        data['groups'] = {'123@chatroom': [], '456@chatroom': []}
+        data['owner_ids'] = {'456@chatroom': ['wxid_old']}
+        path.write_text(json.dumps(data), encoding='utf-8')
+        self.controller.save_configuration({'groups': ['123@chatroom', '456@chatroom'],
+                                           'owner_ids': {'123@chatroom': ['wxid_boss']}})
+        saved = read_json(path)
+        self.assertEqual(saved['owner_ids'], {'456@chatroom': ['wxid_old'], '123@chatroom': ['wxid_boss']})
+        self.assertEqual(self.controller.configuration()['owner_ids'], saved['owner_ids'])
+        # 群被移出列表时它的老板配置必须一起删：members.py 启动时要求 owner_ids 的群都在 groups 里。
+        self.controller.save_configuration({'groups': ['123@chatroom']})
+        self.assertEqual(read_json(path)['owner_ids'], {'123@chatroom': ['wxid_boss']})
+        # 空列表表示该群暂时没有老板。
+        self.controller.save_configuration({'owner_ids': {'123@chatroom': []}})
+        self.assertNotIn('123@chatroom', read_json(path)['owner_ids'])
+
+    def test_invalid_owner_ids_do_not_modify_configuration(self):
+        path = self.root/'members_config.json'
+        original = path.read_bytes()
+        for owners in ([], {'not-in-config@chatroom': ['wxid_boss']}, {'123@chatroom': 'wxid_boss'},
+                       {'123@chatroom': ['']}, {'123@chatroom': ['wxid_a', 'wxid_a']},
+                       {'123@chatroom': ['filehelper']}, {'123@chatroom': 'x'*3},
+                       {'123@chatroom': list(range(33))}):
+            with self.subTest(owners=owners), self.assertRaises(PanelError):
+                self.controller.save_configuration({'groups': ['123@chatroom'], 'owner_ids': owners})
+            self.assertEqual(path.read_bytes(), original)
+
     def test_compatible_llm_options_round_trip_without_changing_saved_key(self):
         path = self.root/'llm_config.json'
         original = read_json(path)

@@ -17,6 +17,7 @@ import time
 from .config import ConfigStore, account_is_unbound, initialize_configs, validate_name
 from .locking import InstanceLock
 from .panel_common import PanelError as PanelError, redact as redact, redact_full
+from .account import validate_account
 from .panel_http import PanelHandler as PanelHandler, PanelServer as PanelServer
 from .message_monitor import MessageBuffer
 from .moments import MomentsPublisher
@@ -312,6 +313,7 @@ class PanelController:
             else:
                 result['groups'] = list(value.get('groups', {}))
                 result['group_names'] = value.get('group_names', {})
+                result['owner_ids'] = value.get('owner_ids', {})
                 result['history_enabled'] = value.get('history_enabled', True)
                 result['daily_clear'] = value.get('daily_clear', True)
         return result
@@ -377,7 +379,7 @@ class PanelController:
                     from .tts import FishTTS
                     FishTTS.from_options(validation)
                 changes[paths[name]] = value
-            if any(key in data for key in ('groups', 'group_names', 'history_enabled', 'daily_clear')):
+            if any(key in data for key in ('groups', 'group_names', 'owner_ids', 'history_enabled', 'daily_clear')):
                 if 'members' not in paths:
                     raise PanelError('请先在主配置设置 members_config_file')
                 members = read_json(paths['members'])
@@ -390,6 +392,10 @@ class PanelController:
                         if not room.endswith('@chatroom'):
                             raise PanelError('请输入以 @chatroom 结尾的群 ID')
                     members['groups'] = {room: members.get('groups', {}).get(room, []) for room in dict.fromkeys(rooms)}
+                    # 群被移出列表时它的老板配置也必须一起删：启动校验要求 owner_ids 的群都在 groups 里。
+                    owners = members.get('owner_ids', {})
+                    if isinstance(owners, dict):
+                        members['owner_ids'] = {room: value for room, value in owners.items() if room in members['groups']}
                     if config.get('chat_allowlist'):
                         config['chat_allowlist'] = list(dict.fromkeys(config['chat_allowlist'] + rooms))
                 if 'group_names' in data:
@@ -410,6 +416,36 @@ class PanelController:
                         else:
                             updated.pop(room, None)
                     members['group_names'] = updated
+                if 'owner_ids' in data:
+                    owners = data['owner_ids']
+                    rooms = members.get('groups', {})
+                    if not isinstance(owners, dict) or len(owners) > 1000:
+                        raise PanelError('老板配置格式不正确')
+                    existing = members.get('owner_ids', {})
+                    if not isinstance(existing, dict):
+                        raise PanelError('已有老板配置格式不正确')
+                    updated = dict(existing)
+                    for room, values in owners.items():
+                        if room not in rooms:
+                            raise PanelError('老板应属于已配置的群')
+                        if not isinstance(values, list) or len(values) > 32:
+                            raise PanelError('每个群的老板应为微信 ID 列表，最多 32 项')
+                        checked = []
+                        for value in values:
+                            if not isinstance(value, str):
+                                raise PanelError('老板微信 ID 应为字符串')
+                            try:
+                                checked.append(validate_account(value))
+                            except ValueError as error:
+                                raise PanelError(f'老板微信 ID 无效：{error}') from None
+                        # 与 members.py 的启动校验保持一致：重复的 ID 存进去会让机器人下次起不来。
+                        if len(set(checked)) != len(checked):
+                            raise PanelError('老板微信 ID 不能重复')
+                        if checked:
+                            updated[room] = checked
+                        else:
+                            updated.pop(room, None)
+                    members['owner_ids'] = updated
                 for key in ('history_enabled', 'daily_clear'):
                     if key in data:
                         if type(data[key]) is not bool:

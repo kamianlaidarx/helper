@@ -39,7 +39,7 @@ let loginAttempt = '', loginGeneration = 0, loginTimer = null, loginStarting = f
 let sendMembers = [], mentionSelection = new Set(), sendSession = '', sendGeneration = 0, sendLoading = false, pendingSend = null, sendPolling = false;
 let sendChatsAttempted = false;
 let taskRows=[], taskActions=[], taskActionSignature='', taskGeneration=0, taskLoading=false, taskLastFetch=0, taskSignature='';
-let groupNameDraft = new Map(), discoveredGroups = [];
+let groupNameDraft = new Map(), discoveredGroups = [], ownerDraft = new Map(), groupMemberCache = new Map();
 let contactData=null, contactGeneration=0, contactLoading=false, contactError='', contactIdentity='', contactDetail='', contactPage=0, contactSignature='';
 const contactPageSize=50;
 const accountKey = row => row.pid + ':' + row.wxid;
@@ -253,6 +253,7 @@ async function loadConfig() {
   config = loaded;
   fill($('#groups-form'), {...config, groups:config.groups?.join('\n')||''});
   groupNameDraft = new Map(Object.entries(config.group_names || {}));
+  ownerDraft = new Map(Object.entries(config.owner_ids || {}).map(([room, ids]) => [room, Array.isArray(ids) ? (ids[0] || '') : '']));
   renderGroupNames(); renderDiscoveredGroups();
   fill($('#scope-form'), {chat_allowlist:config.chat_allowlist.join('\n')});
   for (const name of ['llm','tts']) {
@@ -267,9 +268,21 @@ const lines = value => [...new Set(value.split(/\r?\n/).map(s=>s.trim()).filter(
 function renderGroupNames() {
   const rooms = lines($('#group-ids').value);
   const supported = !!config && Object.hasOwn(config, 'group_names');
-  $('#group-name-list').innerHTML = rooms.length ? '<h3 class="group-name-heading">群聊备注</h3>' +
-    (supported ? '' : '<p class="group-name-hint">请重启管理台后编辑群备注。</p>') + rooms.map((room, index) =>
-    `<div class="group-name-row"><label for="group-name-${index}">${escape(room)}</label><input id="group-name-${index}" data-group-name="${escape(room)}" value="${escape(groupNameDraft.get(room) || '')}" maxlength="64" placeholder="填写备注" autocomplete="off" ${supported ? '' : 'disabled'}></div>`).join('') : '';
+  const ownersSupported = !!config && Object.hasOwn(config, 'owner_ids');
+  $('#group-name-list').innerHTML = rooms.length ? '<h3 class="group-name-heading">群聊备注与老板</h3>' +
+    (supported ? '' : '<p class="group-name-hint">请重启管理台后编辑群备注。</p>') +
+    (ownersSupported ? '' : '<p class="group-name-hint">请重启管理台后指定每个群的老板。</p>') + rooms.map((room, index) => {
+    const owner = ownerDraft.get(room) || '', members = groupMemberCache.get(room);
+    const options = ['<option value="">未指定</option>'];
+    // 已保存但成员列表还没拉到的老板，先占一格，避免下拉框把它显示成「未指定」。
+    if (owner && !(members || []).some(row => row.wxid === owner)) options.push(`<option value="${escape(owner)}" selected>${escape(owner)}</option>`);
+    for (const row of members || []) {
+      const label = `${row.nickname || row.wxid}（${roleLabels[row.role] || roleLabels.unknown}）`;
+      options.push(`<option value="${escape(row.wxid)}" ${row.wxid === owner ? 'selected' : ''}>${escape(label)}</option>`);
+    }
+    return `<div class="group-row"><div class="group-name-row"><label for="group-name-${index}">${escape(room)}</label><input id="group-name-${index}" data-group-name="${escape(room)}" value="${escape(groupNameDraft.get(room) || '')}" maxlength="64" placeholder="填写备注" autocomplete="off" ${supported ? '' : 'disabled'}></div>` +
+      `<div class="group-owner-row"><span class="group-owner-label">老板</span><select data-group-owner="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${options.join('')}</select><button type="button" class="secondary small" data-group-owner-load="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${members ? '刷新成员' : '拉群成员'}</button></div></div>`;
+  }).join('') : '';
 }
 function renderDiscoveredGroups() {
   const node = $('#discovered-chats');
@@ -284,6 +297,25 @@ $('#group-name-list').addEventListener('input', event => {
   const input = event.target.closest('[data-group-name]');
   if (input) groupNameDraft.set(input.dataset.groupName, input.value);
 });
+$('#group-name-list').addEventListener('change', event => {
+  const select = event.target.closest('[data-group-owner]');
+  if (select) ownerDraft.set(select.dataset.groupOwner, select.value);
+});
+$('#group-name-list').addEventListener('click', event => {
+  const button = event.target.closest('[data-group-owner-load]');
+  if (!button) return;
+  action(async () => {
+    const count = await loadGroupMembers(button.dataset.groupOwnerLoad);
+    toast(`已读取 ${count} 位群成员，选好老板后保存群聊配置`);
+  });
+});
+async function loadGroupMembers(room) {
+  const data = await api('group-members?room=' + encodeURIComponent(room));
+  const rows = data.members || [];
+  groupMemberCache.set(room, rows);
+  renderGroupNames();
+  return rows.length;
+}
 async function save(data, message) { await api('config',data); await loadConfig(); toast(message||'配置已保存，下次启动生效'); }
 $('#start-selected').onclick = () => action(()=>launchAccounts(loggedAccounts.filter(row=>selectedAccounts.has(accountKey(row))&&row.selectable&&!activeStates.includes(row.state))));
 $('#refresh-accounts').onclick=()=>loadAccounts();
@@ -418,7 +450,7 @@ $('#reset-plugin-source').onclick=()=>{$('#plugin-reset-confirm').classList.remo
 $('#cancel-plugin-reset').onclick=()=>{$('#plugin-reset-confirm').classList.add('hidden');$('#reset-plugin-source').focus();};
 $('#confirm-plugin-reset').onclick=()=>action(()=>submitPluginSource(true));
 $('#plugin-form').onsubmit=event=>{event.preventDefault();if(!$('#save-plugin-source').disabled)action(()=>submitPluginSource());};
-$('#groups-form').onsubmit=e=>{e.preventDefault();const groups=lines(e.target.elements.groups.value);const data={groups,history_enabled:e.target.elements.history_enabled.checked,daily_clear:e.target.elements.daily_clear.checked};if(config&&Object.hasOwn(config,'group_names'))data.group_names=Object.fromEntries(groups.map(room=>[room,groupNameDraft.get(room)||'']));action(()=>save(data));};
+$('#groups-form').onsubmit=e=>{e.preventDefault();const groups=lines(e.target.elements.groups.value);const data={groups,history_enabled:e.target.elements.history_enabled.checked,daily_clear:e.target.elements.daily_clear.checked};if(config&&Object.hasOwn(config,'group_names'))data.group_names=Object.fromEntries(groups.map(room=>[room,groupNameDraft.get(room)||'']));if(config&&Object.hasOwn(config,'owner_ids'))data.owner_ids=Object.fromEntries(groups.map(room=>[room,ownerDraft.get(room)?[ownerDraft.get(room)]:[]]));action(()=>save(data));};
 $('#scope-form').onsubmit=e=>{e.preventDefault();action(()=>save({chat_allowlist:lines(e.target.elements.chat_allowlist.value)}));};
 for (const name of ['llm','tts']) $('#'+name+'-form').onsubmit=e=>{
   e.preventDefault();
@@ -438,7 +470,7 @@ $('#discover-chats').onclick=()=>action(async()=>{
   const {chats}=await api('chats');discoveredGroups=chats.filter(c=>c.is_group||c.chat_id?.endsWith('@chatroom'));
   renderDiscoveredGroups();
 });
-$('#discovered-chats').onclick=e=>{const button=e.target.closest('[data-room]');if(!button)return;const field=$('#groups-form').elements.groups;field.value=[...new Set([...lines(field.value),button.dataset.room])].join('\n');renderGroupNames();toast('已填入，停止机器人后保存群聊配置');};
+$('#discovered-chats').onclick=e=>{const button=e.target.closest('[data-room]');if(!button)return;const room=button.dataset.room,field=$('#groups-form').elements.groups;field.value=[...new Set([...lines(field.value),room])].join('\n');renderGroupNames();if(!config||!Object.hasOwn(config,'owner_ids')){toast('已填入，停止机器人后保存群聊配置');return;}action(async()=>{await loadGroupMembers(room);toast('已填入群列表，选好老板后保存群聊配置');});};
 
 const roleLabels = {owner:'群主', admin:'群管理员', member:'普通群友', unknown:'身份未知'};
 function sendFeedback(text, error=false) {

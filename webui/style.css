@@ -284,6 +284,12 @@ td { padding: 16px 20px; vertical-align: middle; border-top: 1px solid var(--tab
 .group-name-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-2) 0; }
 .group-name-row label { margin: 0; font: 12px/1.6 var(--font-data); color: var(--muted); overflow-wrap: anywhere; }
 .group-name-row input { margin: 0; }
+.group-row { border-top: 1px solid var(--rule); padding: var(--space-2) 0; }
+.group-row:first-of-type { border-top: 0; }
+.group-owner-row { display: flex; align-items: center; gap: var(--space-2); padding-bottom: var(--space-2); }
+.group-owner-label { font: 12px/1.6 var(--font-data); color: var(--muted); flex: none; }
+.group-owner-row select { margin: 0; flex: 1 1 auto; min-width: 0; }
+.group-owner-row button { flex: none; }
 @media (max-width: 600px) { .group-name-row { grid-template-columns: 1fr; gap: var(--space-1); } }
 label { display: block; font-size: 13px; color: var(--ink); margin-top: var(--space-5); }
 input:not([type="checkbox"]), textarea, select { display: block; width: 100%; min-height: 40px; border: 1px solid var(--field-border); border-radius: var(--radius-control); padding: 9px 12px; background: var(--surface); color: var(--ink); margin-top: var(--space-2); font-size: 13px; }
