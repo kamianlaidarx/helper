@@ -176,13 +176,12 @@ class PictureGameTests(unittest.TestCase):
                 row = router.convert(self.ctx.members.account, ROOM, text)
                 self.assertTrue(row['dispatch_to_plugins'])
 
-    def test_personality_changes_feedback_without_corrupting_answer(self):
+    def test_feedback_names_the_answer_intact_under_persona(self):
         self.send('看图猜成语')
-        self.ctx.persona = '嘴臭'
+        self.ctx.persona = '如烟'
         self.send('绕梁三日')
         text = self.ctx.sent[-2][2]
         self.assertIn('绕梁三日', text)
-        self.assertLessEqual(len(text), 20)
 
     def test_deck_cycles_without_immediate_repeat(self):
         self.send('看图猜成语')

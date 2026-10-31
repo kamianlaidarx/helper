@@ -43,7 +43,7 @@ class PersonalityTests(unittest.TestCase):
         return plugin
 
     def test_personality_persists_and_isolated_from_other_groups_accounts_and_clear(self):
-        state = self.store.set_personality(ROOM, "嘴臭")
+        state = self.store.set_personality(ROOM, "如烟")
         self.assertEqual(self.store.personality(OTHER_ROOM).name, "默认")
         self.assertEqual(self.new_store("wxid_second_robot").personality(ROOM).name, "默认")
         self.store.clear(ROOM)
@@ -53,20 +53,20 @@ class PersonalityTests(unittest.TestCase):
         self.assertEqual(self.new_store().personality(ROOM), state)
 
     def test_same_selection_keeps_generation_unknown_name_does_not_change_it(self):
-        state = self.store.set_personality(ROOM, "卑微")
-        self.assertEqual(self.store.set_personality(ROOM, "卑微"), state)
+        state = self.store.set_personality(ROOM, "如烟")
+        self.assertEqual(self.store.set_personality(ROOM, "如烟"), state)
         with self.assertRaises(MemberError):
             self.store.set_personality(ROOM, "不存在")
         self.assertEqual(self.store.personality(ROOM), state)
-        self.assertGreater(self.store.set_personality(ROOM, "夸夸").generation, state.generation)
+        self.assertGreater(self.store.set_personality(ROOM, "默认").generation, state.generation)
 
     def test_cancel_removes_style_persists_and_keeps_records_and_other_groups(self):
         initial = self.store.personality(ROOM)
         repeated = prepare_switch(self.message("/切换人格 取消"), self.store)
         self.assertEqual(repeated.data["personality_switch"], initial)
         self.store.record(self.message("今天写了文档", sequence=1))
-        old = self.store.set_personality(ROOM, "嘴臭")
-        other = self.store.set_personality(OTHER_ROOM, "夸夸")
+        old = self.store.set_personality(ROOM, "如烟")
+        other = self.store.set_personality(OTHER_ROOM, "如烟")
         prepared = prepare_switch(self.message("/切换人格 取消"), self.store)
         state = prepared.data["personality_switch"]
         self.assertEqual(state.name, "默认")
@@ -85,7 +85,7 @@ class PersonalityTests(unittest.TestCase):
         self.assertEqual(provider.call_args.args[0], "原功能提示")
 
     def test_cancel_during_model_request_discards_old_personality_reply(self):
-        state = self.store.set_personality(ROOM, "嘴臭")
+        state = self.store.set_personality(ROOM, "如烟")
         def cancel(system, user):
             prepare_switch(self.message("/切换人格 取消"), self.store)
             return {"reply": "旧人格回答"}
@@ -101,19 +101,19 @@ class PersonalityTests(unittest.TestCase):
     def test_runtime_switches_before_dispatch_and_ack_uses_same_state(self):
         app = object.__new__(BotApplication)
         app.config, app.members, app.plugins = {"chat_allowlist": []}, self.store, Mock()
-        app._emit(self.message("/切换人格 嘴臭"))
+        app._emit(self.message("/切换人格 如烟"))
         delivered = app.plugins.dispatch.call_args.args[0]
-        self.assertEqual(self.store.personality(ROOM).name, "嘴臭")
-        self.assertEqual(delivered.data["personality_switch"].name, "嘴臭")
+        self.assertEqual(self.store.personality(ROOM).name, "如烟")
+        self.assertEqual(delivered.data["personality_switch"].name, "如烟")
         plugin = PersonalityPlugin()
         plugin.on_load(self.ctx)
         plugin.on_message(delivered, self.ctx)
-        self.assertIn("已切换：嘴臭", self.backend.sent[-1][1])
+        self.assertIn("已切换：如烟", self.backend.sent[-1][1])
 
     def test_missing_or_unknown_switch_returns_usage_without_changing_persona(self):
         plugin = PersonalityPlugin()
         plugin.on_load(self.ctx)
-        for command in ("/切换人格", "/切换人格 未知", "/切换人格 嘴臭 卑微"):
+        for command in ("/切换人格", "/切换人格 未知", "/切换人格 如烟 默认"):
             prepared = prepare_switch(self.message(command), self.store)
             plugin.on_message(prepared, self.ctx)
             self.assertIn("用法", self.backend.sent[-1][1])
@@ -123,15 +123,15 @@ class PersonalityTests(unittest.TestCase):
         app = object.__new__(BotApplication)
         app.config, app.members, app.plugins = {"chat_allowlist": []}, self.store, Mock()
         app.plugins.is_active.return_value = False
-        app._emit(self.message("/切换人格 嘴臭"))
+        app._emit(self.message("/切换人格 如烟"))
         self.assertEqual(self.store.personality(ROOM).name, "默认")
-        prepare_switch(self.message("/切换人格 嘴臭", data={"bot_generated": True}), self.store)
+        prepare_switch(self.message("/切换人格 如烟", data={"bot_generated": True}), self.store)
         self.assertEqual(self.store.personality(ROOM).name, "默认")
 
     def test_owner_phone_can_switch_and_default_style_does_not_modify_system(self):
         router = TextRouter(include_self_groups=True)
         router.set_account(ROBOT)
-        data = router.convert(ROOM, ROBOT, ROBOT + ":\n/切换人格 夸夸")
+        data = router.convert(ROOM, ROBOT, ROBOT + ":\n/切换人格 如烟")
         self.assertTrue(data["dispatch_to_plugins"])
         provider = Mock(return_value={"reply": "回答"})
         self.ctx._llm = Mock(complete_json=provider)
@@ -153,20 +153,20 @@ class PersonalityTests(unittest.TestCase):
 
     def test_personality_change_during_model_request_discards_summary(self):
         self.store.record(self.message("当天记录"))
-        self.store.set_personality(ROOM, "嘴臭")
+        self.store.set_personality(ROOM, "如烟")
         def change(system, user):
-            self.store.set_personality(ROOM, "卑微")
+            self.store.set_personality(ROOM, "默认")
             return {"summary": "旧人格结果"}
         self.ctx._llm = Mock(complete_json=change)
         self.plugin.on_message(self.message("/总结群聊"), self.ctx)
         self.assertEqual(self.backend.sent, [])
 
     def test_old_llm_session_does_not_call_provider_after_switch(self):
-        state = self.store.set_personality(ROOM, "嘴臭")
+        state = self.store.set_personality(ROOM, "如烟")
         provider = Mock(return_value={"reply": "旧结果"})
         self.ctx._llm = Mock(complete_json=provider)
         client = self.ctx.llm_for(self.message("问题"), personality=state)
-        self.store.set_personality(ROOM, "卑微")
+        self.store.set_personality(ROOM, "默认")
         with self.assertRaises(PersonalityExpired):
             client.complete_json("功能", "输入")
         provider.assert_not_called()
@@ -176,7 +176,7 @@ class PersonalityTests(unittest.TestCase):
             self.store.record(self.message(f"前文{index}", sequence=index + 1))
         self.store.record(self.message("其他人的话", sender=OTHER))
         self.store.record(self.message("其他群的话", room=OTHER_ROOM))
-        self.store.record(self.message("/切换人格 嘴臭"))
+        self.store.record(self.message("/切换人格 如烟"))
         self.store.record(self.message("机器人输出", data={"bot_generated": True}))
         msg = self.chat("当前提问")
         self.store.record(self.message("当前提问之后才收到的消息", sequence=101))
@@ -185,7 +185,7 @@ class PersonalityTests(unittest.TestCase):
         self.assertEqual(snapshot.current, msg.text)
 
     def test_true_mention_dialogue_uses_persona_context_and_returns_real_at(self):
-        self.store.set_personality(ROOM, "嘴臭")
+        self.store.set_personality(ROOM, "如烟")
         for index in range(3):
             self.store.record(self.message(f"我今天第{index}次摸鱼", sequence=index + 1))
         provider = Mock(return_value={"reply": "你这效率，进度条看了都想请假。"})
@@ -193,16 +193,17 @@ class PersonalityTests(unittest.TestCase):
         msg = self.chat("我今天又摸鱼了")
         plugin.on_message(msg, self.ctx)
         system, user = provider.call_args.args
-        self.assertTrue(system.startswith("当前人格：嘴臭"))
+        self.assertTrue(system.startswith("当前人格：如烟"))
         payload = json.loads(user)
         self.assertEqual(len(payload["previous"]), 3)
         self.assertEqual(payload["current"], "我今天又摸鱼了")
-        self.assertNotIn(CAT, user)
+        self.assertEqual({row["speaker_id"] for row in payload["previous"]}, {CAT})
+        self.assertEqual({row["name"] for row in payload["previous"]}, {"测试成员"})
         self.assertEqual(self.backend.sent[-1][2], (CAT,))
         self.assertTrue(self.backend.sent[-1][1].startswith("@测试成员\u2005"))
 
-    def test_short_mouth_dialogue_is_plain_and_keeps_real_at_and_context(self):
-        self.store.set_personality(ROOM, "嘴臭")
+    def test_persona_dialogue_strips_markdown_and_keeps_real_at_and_context(self):
+        self.store.set_personality(ROOM, "如烟")
         self.store.record(self.message("今天写了三行代码", sequence=1))
         provider = Mock(return_value={"reply": "```text\n**三行代码就敢吹，先把手上的任务搞定再说。**\n```"})
         plugin = self.setup_chat(provider)
@@ -210,7 +211,6 @@ class PersonalityTests(unittest.TestCase):
         sent = self.backend.sent[-1]
         body = strip_at_labels(sent[1])
         self.assertEqual(sent[2], (CAT,))
-        self.assertLessEqual(len(body), 20)
         self.assertTrue(body.startswith("三行代码"))
         self.assertFalse(any(char in body for char in "`#*-|"))
         self.assertEqual(len(json.loads(provider.call_args.args[1])["previous"]), 1)
@@ -219,29 +219,15 @@ class PersonalityTests(unittest.TestCase):
         plugin.on_message(self.chat(sequence=101), self.ctx)
         self.assertIn("暂时无法回复", self.backend.sent[-1][1])
 
-    def test_short_mouth_summaries_omit_titles_and_cancel_restores_them(self):
+    def test_persona_applies_to_summary_request_and_keeps_reply_title(self):
         self.store.record(self.message("今天写了三行代码，剩下的明天做"))
-        self.store.set_personality(ROOM, "嘴臭")
-        self.ctx._llm = Mock(complete_json=Mock(return_value={"summary": "**代码写三行，吹牛倒是写满了一整本。剩下的明天再说。**"}))
-        for command in ("/总结 测试成员", "/总结群聊"):
+        self.store.set_personality(ROOM, "如烟")
+        provider = Mock(return_value={"summary": "代码写三行，剩下的明天再说。"})
+        self.ctx._llm = Mock(complete_json=provider)
+        for command, title in (("/总结 测试成员", "测试成员 今日聊天"), ("/总结群聊", "今日群聊总结")):
             self.plugin.on_message(self.message(command), self.ctx)
-            body = self.backend.sent[-1][1]
-            self.assertLessEqual(len(body), 20)
-            self.assertTrue(body.startswith("代码写三行"))
-            self.assertNotIn("今日", body)
-            self.assertNotIn("*", body)
-        prepare_switch(self.message("/切换人格 取消"), self.store)
-        self.plugin.on_message(self.message("/总结 测试成员"), self.ctx)
-        self.assertTrue(self.backend.sent[-1][1].startswith("测试成员 今日聊天"))
-
-    def test_short_mouth_idiom_reply_keeps_the_next_word_without_formatting(self):
-        success = game_reply("嘴臭", True, "", "一心一意", "意气风发", "发愤图强")
-        failure = game_reply("嘴臭", False, "**末字和首字不相同，请认真核对接字**", "一心一意", "乱写", "一心一意")
-        self.assertIn("发愤图强", success)
-        self.assertIn("一心一意", failure)
-        for text in (success, failure):
-            self.assertLessEqual(len(text), 20)
-            self.assertFalse(any(char in text for char in "`#*-|"))
+            self.assertTrue(provider.call_args.args[0].startswith("当前人格：如烟"))
+            self.assertTrue(self.backend.sent[-1][1].startswith(title), self.backend.sent[-1][1])
 
     def test_mention_of_other_person_and_bot_output_do_not_call_model(self):
         provider = Mock(return_value={"reply": "回答"})
@@ -270,8 +256,8 @@ class PersonalityTests(unittest.TestCase):
         self.assertEqual(self.backend.sent, [])
 
     def test_clear_and_personality_change_during_chat_request_cancel_reply(self):
-        for mutation in (lambda: self.store.clear(ROOM), lambda: self.store.set_personality(ROOM, "卑微")):
-            self.store.set_personality(ROOM, "嘴臭")
+        for mutation in (lambda: self.store.clear(ROOM), lambda: self.store.set_personality(ROOM, "默认")):
+            self.store.set_personality(ROOM, "如烟")
             def change(system, user):
                 mutation()
                 return {"reply": "失效的结果"}
@@ -283,10 +269,10 @@ class PersonalityTests(unittest.TestCase):
         self.setup_chat()
         msg = self.chat()
         snapshot = self.store.conversation_snapshot(msg)
-        state = self.store.set_personality(ROOM, "嘴臭")
+        state = self.store.set_personality(ROOM, "如烟")
         cancel = Mock(is_set=lambda: False)
         def wait(seconds):
-            self.store.set_personality(ROOM, "卑微")
+            self.store.set_personality(ROOM, "默认")
             return False
         cancel.wait = wait
         self.service._cancel = cancel

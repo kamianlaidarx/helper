@@ -1,6 +1,6 @@
 {
   "api": "v1",
-  "description": "按群切换统一的嘴臭、卑微、夸夸人格",
+  "description": "按群切换统一的如烟人格",
   "requires": [
     "group.text.receive",
     "group.text.send"

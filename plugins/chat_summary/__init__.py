@@ -1,7 +1,6 @@
 """群命令：/总结 昵称，或 /总结群聊。"""
 from wxbot_framework.llm import LLMError
 from wxbot_framework.members import MemberError, SnapshotExpired
-from wxbot_framework.personality import personality_text
 from wxbot_framework.summary import ChatSummarizer, conversation_rows, split_text
 
 
@@ -59,7 +58,7 @@ class Plugin:
             title = f"今日群聊总结（{snapshot.day}，{len(rows)}条，{participants}人）\n"
         else:
             title = f"{snapshot.member.name} 今日聊天（{snapshot.day}，{len(rows)}条）\n"
-        content = personality_text(summary, personality.name) if personality.name == "嘴臭" else title + summary
+        content = title + summary
         for part in split_text(content):
             if not ctx.reply(message, part, delivery_guard=delivery_guard):
                 raise RuntimeError("原生文本发送未成功")

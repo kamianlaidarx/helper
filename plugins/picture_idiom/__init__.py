@@ -110,11 +110,9 @@ class Plugin:
     @staticmethod
     def _feedback(puzzle, personality, *, correct=False):
         if correct:
-            prefix = {'嘴臭': '总算猜对了：', '卑微': '爷，您猜对了：', '夸夸': '眼力真棒，答对了：'}.get(personality.name, '答对了：')
-            return personality_text(prefix + puzzle.answer + '。', personality.name)
-        prefix = {'嘴臭': '看清了，答案：', '卑微': '爷，小的揭晓答案：', '夸夸': '揭晓啦，答案：'}.get(personality.name, '答案：')
-        text = prefix + puzzle.answer + '。'
-        if personality.name != '嘴臭' and puzzle.explanation:
+            return personality_text('答对了：' + puzzle.answer + '。', personality.name)
+        text = '答案：' + puzzle.answer + '。'
+        if puzzle.explanation:
             text += '\n' + puzzle.explanation
         return personality_text(text, personality.name)
 
@@ -196,8 +194,7 @@ class Plugin:
                 return
             if candidate != game.current.answer:
                 if time.monotonic() - game.last_wrong >= self.cooldown:
-                    feedback = {'嘴臭': '这都没猜中？再看图。', '卑微': '爷，是小的图没画好，再瞧瞧？',
-                                '夸夸': '思路不错，再观察一下！'}.get(personality.name, '还没猜中，再看看图；也可以发送“提示”。')
+                    feedback = '还没猜中，再看看图；也可以发送“提示”。'
                     if ctx.reply_at(message, feedback, delivery_guard=guard):
                         game.last_wrong = time.monotonic()
                 return

@@ -95,7 +95,7 @@ class SpeechTests(unittest.TestCase):
                     if change == 'voice': self.speech.select(ROOM, SECOND.name)
                     elif change == 'disable': self.active = False
                     elif change == 'clear': self.store.clear(ROOM)
-                    elif change == 'personality': self.store.set_personality(ROOM, '夸夸' if personality.name != '夸夸' else '卑微')
+                    elif change == 'personality': self.store.set_personality(ROOM, '如烟' if personality.name != '如烟' else '默认')
                     elif change == 'disconnect': self.service.cancel_pending()
                     else: self.speech.close()
                     return wav()

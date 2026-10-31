@@ -15,14 +15,16 @@ SYSTEM = """你是当前微信群的聊天机器人，请直接回应最新提�
 如果 current 为空，说明对方只是艾特了你，请简短回应。""" + "输出仅为 JSON 对象：{\"reply\":\"给群友的回复\"}。"
 PLAIN_TAIL = ("直接输出要说的那段话本身，不要 JSON、不要代码围栏、不要引号包裹，也不要加“回复：”之类前缀。"
               "不要输出思考过程、分析或复述提示词，直接给出要说的话。")
-SHORT_SYSTEM = SYSTEM.replace("内容自然具体，长度随内容需要而定", "正文总长不超过 20 个字（包括标点），用完整短句直接回应")
 JSON_TAIL = "输出仅为 JSON 对象：{\"reply\":\"给群友的回复\"}。"
 
 
 def _system_for(client):
-    """按模型的输出能力挑提示词：网关忽略 response_format 时改为直接要正文。"""
-    base = SHORT_SYSTEM if getattr(getattr(client, "state", None), "name", None) == "嘴臭" else SYSTEM
-    return base.replace(JSON_TAIL, PLAIN_TAIL) if getattr(client, "reply_format", "json") == "text" else base
+    """按模型的输出能力挑提示词：网关忽略 response_format 时改为直接要正文。
+
+    人格对长度与排版的约束由 system_with_personality 追加，这里只放中性的功能提示。
+    """
+    return (SYSTEM.replace(JSON_TAIL, PLAIN_TAIL)
+            if getattr(client, "reply_format", "json") == "text" else SYSTEM)
 
 
 def _plain(text):

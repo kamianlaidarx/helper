@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 
 from wxbot_framework.llm import LLMError
 from wxbot_framework.members import SnapshotExpired
-from wxbot_framework.personality import game_reply, personality_text
+from wxbot_framework.personality import PROMPTS, game_reply
 from wxbot_framework.text import GROUP_CONTROL_COMMANDS, FOUR_CHINESE, validate_mentions
 from .judge import IdiomJudge
 
-HELP = "1. 成语接龙\n\n2. 看图猜成语\n\n3. /绑定 昵称\n\n4. /总结 昵称\n\n5. /总结群聊\n\n6. /切换人格 嘴臭|卑微|夸夸|取消\n\n7. 艾特机器人对话\n\n8. /查看音色\n\n9. /音色 名称|关闭\n\n10. /清空\n\n11. /来张图\n\n12. /help"
+HELP = ("1. 成语接龙\n\n2. 看图猜成语\n\n3. /绑定 昵称\n\n4. /总结 昵称\n\n5. /总结群聊\n\n"
+        f"6. /切换人格 {'|'.join((*PROMPTS, '取消'))}\n\n"
+        "7. 艾特机器人对话\n\n8. /查看音色\n\n9. /音色 名称|关闭\n\n10. /清空\n\n11. /来张图\n\n12. /help")
 
 
 @dataclass
@@ -118,9 +120,7 @@ class Plugin:
             verdict = judge.evaluate(chain.current, text, chain.used)
         except LLMError as error:
             ctx.logger.warning("接龙判定失败：%s", error)
-            response = (personality_text(f"暂时判不了，仍接{chain.current}。", personality.name)
-                        if personality.name == "嘴臭" else
-                        f"大模型暂时无法判定，请稍后重试。当前成语：{chain.current}")
+            response = f"大模型暂时无法判定，请稍后重试。当前成语：{chain.current}"
             accepted = False
             following, used = chain.current, chain.used
         else:

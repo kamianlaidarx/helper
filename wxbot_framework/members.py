@@ -340,7 +340,7 @@ class MemberStore:
     def set_personality(self, room, name):
         from .personality import PROMPTS
         if room not in self.groups or (name not in PROMPTS and name != "默认"):
-            raise MemberError("人格应为 嘴臭、卑微、夸夸 或 默认，且在已启用的群中切换")
+            raise MemberError(f"人格应为 {'、'.join(PROMPTS)} 或 默认，且在已启用的群中切换")
         with self._lock:
             current = self.personality(room)
             if current.name == name:
