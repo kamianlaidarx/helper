@@ -120,6 +120,11 @@ class RobotProxy:
         from urllib.parse import urlencode
         return self.request('group-members?' + urlencode({'room': room}))
     def send_text(self, data): return self.request('send-text', data)
+    def list_scheduled_tasks(self): return self.request('scheduled-tasks')
+    def save_scheduled_task(self, data): return self.request('scheduled-tasks', data)
+    def delete_scheduled_task(self, data): return self.request('scheduled-tasks/delete', data)
+    def toggle_scheduled_task(self, data): return self.request('scheduled-tasks/toggle', data)
+    def scheduled_action_types(self): return self.request('scheduled-actions')
     def send_connection(self): return self.request('send-connection')
     def send_status(self, identifier):
         from urllib.parse import urlencode
@@ -164,6 +169,7 @@ class RobotHub:
         self.workers, self.factory = {}, worker_factory
         self.scan = scan
         self.lock = threading.RLock()
+        self._wechat_login = None
         self.stop_event, self.stopped_event = threading.Event(), threading.Event()
         if not self.registry.exists():
             atomic_json(self.registry, {'robots': []})
@@ -246,6 +252,15 @@ class RobotHub:
             result.append({**row, 'robot_id': profile.get('id'), 'state': profile.get('state', 'stopped'),
                            'connected': profile.get('connected', False), 'selectable': not reason, 'reason': reason})
         return {'accounts': result}
+
+    def wechat_login(self):
+        with self.lock:
+            if self.stop_event.is_set():
+                raise PanelError('管理服务正在退出', 409)
+            if self._wechat_login is None:
+                from .wechat_login import WechatLoginManager
+                self._wechat_login = WechatLoginManager(self.root)
+            return self._wechat_login
 
     def prepare_account(self, data):
         with self.lock:
@@ -364,6 +379,9 @@ class RobotHub:
         self.stop_event.set()
         with self.lock:
             workers = list(self.workers.values())
+            login = self._wechat_login
+        if login is not None:
+            login.close()
         threads = [threading.Thread(target=worker.close) for worker in workers]
         for thread in threads: thread.start()
         try:

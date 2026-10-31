@@ -60,6 +60,39 @@ class Plugin:
 
 以上是 `plugins` 内的条目，保留其他配置不变。执行 `python main.py --check` 后，在运行中的终端输入 `reload hello`，或重启主程序。
 
+## 注册定时动作
+
+插件可以在 `plugin.json` 中声明 `scheduled_actions`，管理台会自动列出动作并按字段生成表单。例如：
+
+```json
+{
+  "scheduled_actions": [{
+    "id": "greeting",
+    "label": "发送问候",
+    "method": "scheduled_greeting",
+    "fields": [
+      {"name": "chat_id", "label": "会话 ID", "type": "chat", "required": true},
+      {"name": "text", "label": "内容", "type": "textarea", "required": true}
+    ]
+  }]
+}
+```
+
+将该字段加到原有清单中，并在 `Plugin` 中实现方法：
+
+```python
+def scheduled_greeting(self, params, ctx):
+    # params 按声明校验；ctx 使用触发时的微信连接。
+    if ctx.send_text(params['chat_id'], params['text']) is False:
+        raise RuntimeError('发送失败')
+```
+
+字段类型支持 `text`、`textarea`、`chat`（微信或群 ID）、`integer`、`boolean`；`required` 可省略，默认为 `false`。每个插件最多声明 16 个动作，每个动作最多 16 个字段。动作 ID 和字段名使用小写字母、数字及下划线，方法名由清单指定。网页不能指定任意 Python 函数。模板 `plugins/_template` 包含可复制示例。
+
+对应插件必须已加载，触发时使用插件当前实例和当前配置；`ctx` 的微信操作绑定触发时的连接，发送还受会话白名单限制。回调与该插件的消息回调串行，异常计入任务失败状态，不自动重试；不要在回调里创建无法停止的后台工作。插件代码按信任代码运行，定时接口不是安全沙箱；插件若自行创建后台工作或操作外部服务，必须自行处理生命周期、失败与不确定结果。
+
+管理台可在插件停止时配置已声明动作，但必须启动机器人并启用该插件才能执行；插件已删除或移除动作时，旧任务仍可停用或删除。长任务不阻塞调度器，其重叠周期会跳过。已有定时文字任务无需迁移。默认 `chat_summary` 插件提供“总结群聊”动作；自行定制过插件源码的账号，需要在自己使用的版本中声明并实现该动作。
+
 ## 常用发送接口
 
 | 接口 | 用途 |
@@ -131,7 +164,7 @@ voice.send / friend.voice.send / group.voice.send
 
 ## 群成员与昵称
 
-`ctx.group_members(room, expected_session=message.session_id)` 返回完整成员快照的元组；缓存不可用时返回 `None`，不能把它当成空群。每项含 `wxid`（成员 ID）、`group_nickname`（本群原始昵称）、`wechat_name`（微信名）、`nickname`（群昵称优先、再回退到微信名）。未读取到的名字为空字符串。
+`ctx.group_members(room, expected_session=message.session_id)` 返回完整成员快照的元组；缓存不可用时返回 `None`，不能把它当成空群。每项含 `wxid`（成员 ID）、`group_nickname`（本群原始昵称）、`wechat_name`（微信名）、`nickname`（群昵称优先、再回退到微信名）。微信 4.2.0.11 的微信名也会查询已加载的非好友成员缓存；未读取到的名字为空字符串。
 
 `ctx.group_member_name(room, wxid, expected_session=message.session_id)` 返回该群的昵称或微信名，找不到时返回 `None`。这些接口读取当前微信缓存；框架 `/绑定` 设置的称呼可用 `ctx.members.display_name(wxid, room)` 查询，两者分别保留，不相互覆盖。
 

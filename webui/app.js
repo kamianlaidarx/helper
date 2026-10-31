@@ -35,20 +35,22 @@ let robot = sessionStorage.getItem('helper-robot') || 'default', robotRows = [],
 let pluginSignature = '', accountSignature = '', robotOptionsSignature = '';
 let messages=[], messageCursor=0, messageStream='', messagePaused=false, messageError='', messageGeneration=0, messageSignature='';
 let loggedAccounts = [], selectedAccounts = new Set(), accountsError = '', accountsLoading = true, accountsFetching = false, lastAccountFetch = 0, batchStarting = false;
+let loginAttempt = '', loginGeneration = 0, loginTimer = null, loginStarting = false;
 let sendMembers = [], mentionSelection = new Set(), sendSession = '', sendGeneration = 0, sendLoading = false, pendingSend = null, sendPolling = false;
 let sendChatsAttempted = false;
+let taskRows=[], taskActions=[], taskActionSignature='', taskGeneration=0, taskLoading=false, taskLastFetch=0, taskSignature='';
 let groupNameDraft = new Map(), discoveredGroups = [];
 let contactData=null, contactGeneration=0, contactLoading=false, contactError='', contactIdentity='', contactDetail='', contactPage=0, contactSignature='';
 const contactPageSize=50;
 const accountKey = row => row.pid + ':' + row.wxid;
 const activeStates = ['starting','running','stopping'];
 const profileLabel = row => loggedAccounts.find(account=>account.wxid===row?.account)?.name || row?.account || (row?.id==='default'?'默认配置':row?.name) || '当前账号';
-const pages = {overview:'运行概览', plugins:'插件管理', groups:'群聊与会话', contacts:'联系人', moments:'朋友圈', models:'模型与语音', logs:'运行日志'};
+const pages = {overview:'运行概览', plugins:'插件管理', groups:'群聊与会话', tasks:'定时任务', contacts:'联系人', moments:'朋友圈', models:'模型与语音', logs:'运行日志'};
 const pluginNames = {anti_recall:['文字防撤回'], anti_recall_image:['图片防撤回'], anti_recall_file:['文件防撤回'], anti_recall_voice:['语音防撤回'], image_gallery:['图库图片'], picture_idiom:['看图猜成语'], idiom_chain:['成语接龙'], chat_summary:['聊天总结'], mention_chat:['艾特对话'], voice_reply:['语音回复'], group_notice:['进退群提醒'], member_identity:['群内昵称绑定'], personality:['切换人格'], friend_auto_accept:['自动通过好友'], chat_records:['聊天记录管理'], id_responder:['会话 ID 查询'], echo:['文字回声']};
 const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function api(path, body, identifier = robot) {
-  const scope = (path === 'robots' || path === 'accounts' || path.startsWith('accounts/')) ? '' : (path.includes('?') ? '&' : '?') + 'robot=' + encodeURIComponent(identifier);
+  const scope = (path === 'robots' || path === 'accounts' || path.startsWith('accounts/') || path.startsWith('wechat-login/')) ? '' : (path.includes('?') ? '&' : '?') + 'robot=' + encodeURIComponent(identifier);
   const response = await fetch('/api/' + path + scope, {method: body === undefined ? 'GET' : 'POST', cache:'no-store',
     headers:{'X-Helper-Token':token, ...(body === undefined ? {} : {'Content-Type':'application/json'})},
     ...(body === undefined ? {} : {body:JSON.stringify(body)})});
@@ -84,6 +86,7 @@ function navigate() {
   window.scrollTo(0, 0);
   moments.render();
   if(name==='groups' && state?.connected && !sendChatsAttempted && !sendLoading)loadSendChats();
+  if(name==='tasks')loadTasks();
 }
 function renderRobotOptions() {
   const names={stopped:'已停止',starting:'启动中',running:'等待连接',stopping:'停止中',error:'异常'};
@@ -108,7 +111,8 @@ function renderState() {
   $('#discover-chats').disabled=busy||unavailable||!state||!activeStates.includes(state.state);
   renderRobotOptions();renderAccounts();renderMessages();
   const running=!!state&&activeStates.includes(state.state);
-  document.querySelectorAll('form:not(#send-form):not(#plugin-form):not(#moments-form) .primary').forEach(node=>node.disabled=unavailable||!state||running||busy);
+  document.querySelectorAll('form:not(#send-form):not(#plugin-form):not(#moments-form):not(#task-form) .primary').forEach(node=>node.disabled=unavailable||!state||running||busy);
+  $('#task-save').disabled=unavailable||!state||busy;
   renderSendState();
   renderContacts();
   moments.render();
@@ -187,6 +191,54 @@ async function launchAccounts(rows) {
     await loadConfig();
   }finally{batchStarting=false;renderAccounts();}
 }
+async function closeWechatLogin() {
+  const attempt=loginAttempt; loginGeneration++; loginAttempt=''; loginStarting=false;
+  clearTimeout(loginTimer); $('#wechat-login-qr').removeAttribute('src');
+  $('#wechat-login-qr').classList.add('hidden'); $('#wechat-login-panel').classList.add('hidden');
+  $('#login-wechat').disabled=false;
+  if(attempt){try{await api('wechat-login/cancel',{attempt_id:attempt});}catch{}}
+}
+async function pollWechatLogin(attempt,generation) {
+  if(generation!==loginGeneration || attempt!==loginAttempt)return;
+  try {
+    const result=await api('wechat-login/status?attempt_id='+encodeURIComponent(attempt));
+    if(generation!==loginGeneration || attempt!==loginAttempt)return;
+    const image=$('#wechat-login-qr'), status=$('#wechat-login-status');
+    if(result.status==='qr_available'){
+      image.src='data:image/png;base64,'+result.qrcode_base64; image.classList.remove('hidden');
+      status.textContent='请使用手机微信扫码，并在手机确认登录。';
+    }else{
+      image.removeAttribute('src');image.classList.add('hidden');
+      status.textContent=result.status==='logged_in'?'已登录，可在上方选择账号。':
+        result.status==='exited'?'微信进程已退出，请在微信中重新打开登录窗口。':
+        result.status==='starting'?'正在启动微信…':'等待二维码，请保持微信登录窗口打开且未最小化。';
+    }
+    if(result.status==='logged_in'){
+      loginAttempt='';$('#login-wechat').disabled=false;
+      try{await api('wechat-login/cancel',{attempt_id:attempt});await loadRobots();await loadAccounts();}catch{}
+      return;
+    }
+    if(result.status==='exited'){loginAttempt='';$('#login-wechat').disabled=false;try{await api('wechat-login/cancel',{attempt_id:attempt});}catch{}return;}
+    loginTimer=setTimeout(()=>pollWechatLogin(attempt,generation),2000);
+  } catch(error) {
+    if(generation!==loginGeneration)return;
+    $('#wechat-login-qr').removeAttribute('src');$('#wechat-login-qr').classList.add('hidden');
+    $('#wechat-login-status').textContent=error.message;$('#login-wechat').disabled=false;
+    const old=loginAttempt;loginAttempt='';if(old){try{await api('wechat-login/cancel',{attempt_id:old});}catch{}}
+  }
+}
+$('#login-wechat').onclick=async()=>{
+  if(loginStarting || loginAttempt)return;
+  loginStarting=true;const generation=++loginGeneration;$('#login-wechat').disabled=true;
+  $('#wechat-login-panel').classList.remove('hidden');$('#wechat-login-status').textContent='正在启动微信…';
+  try{
+    const result=await api('wechat-login/start',{});
+    if(generation!==loginGeneration){try{await api('wechat-login/cancel',{attempt_id:result.attempt_id});}catch{}return;}
+    loginAttempt=result.attempt_id;await pollWechatLogin(loginAttempt,generation);
+  }catch(error){if(generation===loginGeneration){$('#wechat-login-status').textContent=error.message;$('#login-wechat').disabled=false;}}
+  finally{loginStarting=false;}
+};
+$('#close-wechat-login').onclick=closeWechatLogin;
 function fill(form, values) {
   if (!values) return;
   for (const input of form.elements) {
@@ -646,6 +698,7 @@ async function poll(){
     if(!next.connected)sendChatsAttempted=false;
     $('#service-banner').classList.add('hidden');renderState();
     if(next.connected && location.hash==='#groups' && !sendChatsAttempted && !sendLoading)loadSendChats();
+    if(location.hash==='#tasks' && Date.now()-taskLastFetch>5000)loadTasks();
     if(tail.cursor<logCursor)logs=[];logCursor=tail.cursor;
     if(tail.rows.length){logs=[...logs,...tail.rows].slice(-1000);renderLogs();}
     await pollMessages(requested,generation);
@@ -656,6 +709,87 @@ async function poll(){
   }catch(error){serviceDisconnected();}
   finally{pollBusy=false;}
 }
+function taskKind() {
+  const daily=$('#task-form').elements.kind.value==='daily';
+  $('#task-interval-label').classList.toggle('hidden',daily);
+  $('#task-time-label').classList.toggle('hidden',!daily);
+  $('#task-form').elements.interval_minutes.required=!daily;
+  $('#task-form').elements.daily_time.required=daily;
+}
+function resetTaskForm() {
+  const f=$('#task-form');f.reset();f.elements.id.value='';
+  if(taskActions.length)f.elements.action_id.value='builtin.send_text';
+  $('#task-form-heading').textContent='新建任务';$('#task-cancel').classList.add('hidden');taskKind();renderTaskFields();
+}
+function renderTaskFields(values={}) {
+  const id=$('#task-action').value, action=taskActions.find(item=>item.id===id);
+  $('#task-parameters').innerHTML=(action?.fields||[]).map(field=>{
+    const name=escape(field.name), label=escape(field.label), required=field.required?'required':'';
+    if(field.type==='boolean')return `<label class="inline"><input type="checkbox" data-task-field="${name}" ${values[field.name]?'checked':''}>${label}</label>`;
+    if(field.type==='textarea')return `<label>${label}<textarea data-task-field="${name}" rows="3" ${required}>${escape(values[field.name]??'')}</textarea></label>`;
+    const kind=field.type==='integer'?'number':'text';
+    return `<label>${label}<input type="${kind}" ${field.type==='chat'?'list="task-chat-options" spellcheck="false"':''} data-task-field="${name}" value="${escape(values[field.name]??'')}" ${required}></label>`;
+  }).join('');
+}
+function renderTaskActions() {
+  const signature=JSON.stringify(taskActions);if(signature===taskActionSignature)return;
+  taskActionSignature=signature;const select=$('#task-action'),previous=select.value;
+  const values=Object.fromEntries([...$('#task-parameters').querySelectorAll('[data-task-field]')].map(node=>[node.dataset.taskField,node.type==='checkbox'?node.checked:node.value]));
+  select.innerHTML=taskActions.map(item=>`<option value="${escape(item.id)}">${escape(item.label)}${item.plugin?' · '+escape(pluginNames[item.plugin]?.[0]||item.plugin):''}</option>`).join('');
+  if(previous&&$('#task-form').elements.id.value&&!taskActions.some(item=>item.id===previous))select.insertAdjacentHTML('beforeend',`<option value="${escape(previous)}" disabled>原动作已不可用</option>`);
+  select.value=[...select.options].some(item=>item.value===previous)?previous:'builtin.send_text';
+  renderTaskFields(select.value===previous?values:{});
+}
+function taskTime(timestamp) { return timestamp ? new Date(timestamp*1000).toLocaleString('zh-CN',{hour12:false}) : '—'; }
+function renderTasks() {
+  const signature=JSON.stringify([taskRows,taskActions,serviceAvailable]);if(signature===taskSignature)return;taskSignature=signature;
+  $('#task-list').innerHTML=taskRows.map(row=>{const id=row.action_id||'builtin.send_text', action=taskActions.find(item=>item.id===id), target=row.params?.chat_id||row.chat_id||'';return `<tr><td><span class="robot-name">${escape(row.name)}</span><span class="account-id">${escape(action?.label||'动作已不可用')}${target?' · '+escape(target):''}</span></td><td>${row.kind==='daily'?'每天 '+escape(row.daily_time):'每 '+escape(row.interval_seconds/60)+' 分钟'}<span class="account-id">${row.enabled?'下次 '+escape(taskTime(row.next_run)):'已暂停'}</span></td><td>${row.enabled?'已启用':'已停用'}<span class="account-id">${escape(row.last_status||'尚未执行')}${row.last_time?' · '+escape(taskTime(row.last_time)):''}</span></td><td><div class="plugin-actions"><button class="secondary small" type="button" data-task="${escape(row.id)}" data-task-action="edit">编辑</button><button class="text-button small" type="button" data-task="${escape(row.id)}" data-task-action="toggle">${row.enabled?'停用':'启用'}</button><button class="text-button small danger-text" type="button" data-task="${escape(row.id)}" data-task-action="delete">删除</button></div></td></tr>`;}).join('')||'<tr><td colspan="4" class="table-empty">暂无任务。</td></tr>';
+}
+async function loadTasks() {
+  if(taskLoading||!serviceAvailable)return;
+  taskLoading=true;taskLastFetch=Date.now();const requested=robot, generation=taskGeneration;
+  try {
+    const [data,types]=await Promise.all([api('scheduled-tasks',undefined,requested),api('scheduled-actions',undefined,requested)]);
+    if(requested!==robot||generation!==taskGeneration)return;
+    taskRows=data.tasks;taskActions=types.actions;$('#task-status').textContent='';renderTaskActions();renderTasks();
+    const chats=await api('chats',undefined,requested).catch(()=>({chats:[]}));
+    if(requested!==robot||generation!==taskGeneration)return;
+    const options=[{chat_id:'filehelper',name:'文件传输助手'},...(chats.chats||[]),...(config?.groups||[]).map(chat_id=>({chat_id}))];
+    const unique=[...new Map(options.map(row=>[row.chat_id,row])).values()];
+    $('#task-chat-options').innerHTML=unique.map(row=>`<option value="${escape(row.chat_id)}">${escape(config?.group_names?.[row.chat_id]||row.name||row.chat_id)}</option>`).join('');
+  } catch(error) {if(requested===robot&&generation===taskGeneration)$('#task-status').textContent=error.message;}
+  finally {taskLoading=false;}
+}
+$('#task-form').elements.kind.onchange=taskKind;
+$('#task-action').onchange=()=>renderTaskFields();
+$('#task-cancel').onclick=resetTaskForm;
+$('#task-refresh').onclick=loadTasks;
+$('#task-form').onsubmit=event=>{
+  event.preventDefault();const f=event.target.elements;
+  const selected=taskActions.find(item=>item.id===f.action_id.value);if(!selected){toast('请选择有效的任务类型',true);return;}
+  const params={};for(const field of selected.fields){const node=$(`[data-task-field="${field.name}"]`);params[field.name]=field.type==='boolean'?node.checked:field.type==='integer'&&node.value!==''?Number(node.value):node.value;}
+  const payload={id:f.id.value||undefined,name:f.name.value,action_id:f.action_id.value,params,kind:f.kind.value,interval_seconds:Number(f.interval_minutes.value)*60,daily_time:f.daily_time.value,enabled:f.enabled.checked};
+  action(async()=>{await api('scheduled-tasks',payload);resetTaskForm();await loadTasks();toast('任务已保存');});
+};
+$('#task-list').onclick=event=>{
+  const button=event.target.closest('[data-task]');if(!button)return;
+  const row=taskRows.find(item=>item.id===button.dataset.task);if(!row)return;
+  if(button.dataset.taskAction==='edit'){
+    const id=row.action_id||'builtin.send_text';if(!taskActions.some(item=>item.id===id)){toast('这个动作已不可用，可先停用或删除任务',true);return;}
+    const f=$('#task-form').elements;for(const key of ['id','name','kind','daily_time'])f[key].value=row[key]||'';
+    f.action_id.value=id;renderTaskFields(row.params||{chat_id:row.chat_id,content:row.content});
+    f.interval_minutes.value=row.interval_seconds?row.interval_seconds/60:5;f.enabled.checked=row.enabled;
+    $('#task-form-heading').textContent='编辑任务';$('#task-cancel').classList.remove('hidden');taskKind();f.name.focus();return;
+  }
+  if(button.dataset.taskAction==='delete'&&!confirm('删除这个定时任务？'))return;
+  action(async()=>{
+    if(button.dataset.taskAction==='delete')await api('scheduled-tasks/delete',{id:row.id});
+    else await api('scheduled-tasks/toggle',{id:row.id,enabled:!row.enabled});
+    if($('#task-form').elements.id.value===row.id)resetTaskForm();
+    await loadTasks();toast('任务已更新');
+  });
+};
+taskKind();
 document.querySelectorAll('[data-page]').forEach(link=>link.addEventListener('click',()=>{if(link.hash===location.hash)navigate();}));
 window.addEventListener('hashchange',navigate);navigate();
 async function loadRobots(){
@@ -667,6 +801,7 @@ async function switchRobot(identifier){
   if($('#plugin-dialog').open)$('#plugin-dialog').close();
   resetContacts();
   resetComposer();
+  taskRows=[];taskActions=[];taskActionSignature='';taskGeneration++;resetTaskForm();renderTasks();
   messageGeneration++;messages=[];messageCursor=0;messageStream='';messageError='';$('#message-search').value='';messageSignature='';renderMessages();
   robot=identifier;sessionStorage.setItem('helper-robot',robot);
   $('#robot-select').value=robot;
