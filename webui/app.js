@@ -39,7 +39,7 @@ let loginAttempt = '', loginGeneration = 0, loginTimer = null, loginStarting = f
 let sendMembers = [], mentionSelection = new Set(), sendSession = '', sendGeneration = 0, sendLoading = false, pendingSend = null, sendPolling = false;
 let sendChatsAttempted = false;
 let taskRows=[], taskActions=[], taskActionSignature='', taskGeneration=0, taskLoading=false, taskLastFetch=0, taskSignature='';
-let groupNameDraft = new Map(), discoveredGroups = [], ownerDraft = new Map(), groupMemberCache = new Map();
+let groupNameDraft = new Map(), discoveredGroups = [], ownerDraft = new Map(), ownerQuery = new Map(), groupMemberCache = new Map();
 let contactData=null, contactGeneration=0, contactLoading=false, contactError='', contactIdentity='', contactDetail='', contactPage=0, contactSignature='';
 const contactPageSize=50;
 const accountKey = row => row.pid + ':' + row.wxid;
@@ -265,6 +265,23 @@ async function loadConfig() {
   fill($('#delay-form'), config.text_send_delay);
 }
 const lines = value => [...new Set(value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean))];
+function ownerOptions(room) {
+  const owner = ownerDraft.get(room) || '', members = groupMemberCache.get(room) || [];
+  const query = (ownerQuery.get(room) || '').trim().toLowerCase();
+  const haystack = row => `${row.nickname || ''} ${row.wxid || ''} ${row.alias || ''} ${roleLabels[row.role] || ''}`.toLowerCase();
+  const options = ['<option value="">未指定</option>'];
+  // 已保存但成员列表还没拉到的老板，先占一格，避免下拉框把它显示成「未指定」。
+  if (owner && !members.some(row => row.wxid === owner)) options.push(`<option value="${escape(owner)}" selected>${escape(owner)}</option>`);
+  let matched = 0;
+  for (const row of members) {
+    if (query && !haystack(row).includes(query)) continue;
+    matched += 1;
+    const label = `${row.nickname || row.wxid}（${roleLabels[row.role] || roleLabels.unknown}）`;
+    options.push(`<option value="${escape(row.wxid)}" ${row.wxid === owner ? 'selected' : ''}>${escape(label)}</option>`);
+  }
+  if (query && !matched) options.push('<option value="" disabled>没有匹配的成员</option>');
+  return options.join('');
+}
 function renderGroupNames() {
   const rooms = lines($('#group-ids').value);
   const supported = !!config && Object.hasOwn(config, 'group_names');
@@ -272,16 +289,9 @@ function renderGroupNames() {
   $('#group-name-list').innerHTML = rooms.length ? '<h3 class="group-name-heading">群聊备注与老板</h3>' +
     (supported ? '' : '<p class="group-name-hint">请重启管理台后编辑群备注。</p>') +
     (ownersSupported ? '' : '<p class="group-name-hint">请重启管理台后指定每个群的老板。</p>') + rooms.map((room, index) => {
-    const owner = ownerDraft.get(room) || '', members = groupMemberCache.get(room);
-    const options = ['<option value="">未指定</option>'];
-    // 已保存但成员列表还没拉到的老板，先占一格，避免下拉框把它显示成「未指定」。
-    if (owner && !(members || []).some(row => row.wxid === owner)) options.push(`<option value="${escape(owner)}" selected>${escape(owner)}</option>`);
-    for (const row of members || []) {
-      const label = `${row.nickname || row.wxid}（${roleLabels[row.role] || roleLabels.unknown}）`;
-      options.push(`<option value="${escape(row.wxid)}" ${row.wxid === owner ? 'selected' : ''}>${escape(label)}</option>`);
-    }
+    const members = groupMemberCache.get(room);
     return `<div class="group-row"><div class="group-name-row"><label for="group-name-${index}">${escape(room)}</label><input id="group-name-${index}" data-group-name="${escape(room)}" value="${escape(groupNameDraft.get(room) || '')}" maxlength="64" placeholder="填写备注" autocomplete="off" ${supported ? '' : 'disabled'}></div>` +
-      `<div class="group-owner-row"><span class="group-owner-label">老板</span><select data-group-owner="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${options.join('')}</select><button type="button" class="secondary small" data-group-owner-load="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${members ? '刷新成员' : '拉群成员'}</button></div></div>`;
+      `<div class="group-owner-row"><span class="group-owner-label">老板</span><input class="group-owner-search" type="search" data-group-owner-search="${escape(room)}" value="${escape(ownerQuery.get(room) || '')}" placeholder="${members ? '搜昵称或 ID' : '先拉群成员'}" autocomplete="off" ${ownersSupported ? '' : 'disabled'}><select data-group-owner="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${ownerOptions(room)}</select><button type="button" class="secondary small" data-group-owner-load="${escape(room)}" ${ownersSupported ? '' : 'disabled'}>${members ? '刷新成员' : '拉群成员'}</button></div></div>`;
   }).join('') : '';
 }
 function renderDiscoveredGroups() {
@@ -297,7 +307,14 @@ function renderDiscoveredGroups() {
 $('#group-ids').addEventListener('input', renderGroupNames);
 $('#group-name-list').addEventListener('input', event => {
   const input = event.target.closest('[data-group-name]');
-  if (input) groupNameDraft.set(input.dataset.groupName, input.value);
+  if (input) { groupNameDraft.set(input.dataset.groupName, input.value); return; }
+  const search = event.target.closest('[data-group-owner-search]');
+  if (!search) return;
+  const room = search.dataset.groupOwnerSearch;
+  ownerQuery.set(room, search.value);
+  // 只重画这一行的下拉选项，避免整块重绘把输入焦点弄丢。
+  const select = search.parentElement.querySelector('[data-group-owner]');
+  if (select) select.innerHTML = ownerOptions(room);
 });
 $('#group-name-list').addEventListener('change', event => {
   const select = event.target.closest('[data-group-owner]');
@@ -836,8 +853,11 @@ function renderDeleteRobot(){
   const button=$('#delete-robot');
   if(!button)return;
   const profile=robotRows.find(row=>row.id===robot);
-  button.hidden=robot==='default'||!profile;
-  if(!button.hidden)button.textContent='删除「'+(profile.name||'当前账号')+'」';
+  const removable=robot!=='default'&&!!profile;
+  // hidden 属性会被 .secondary{display:inline-flex} 盖掉，只能用 !important 的 .hidden。
+  button.classList.toggle('hidden',!removable);
+  button.disabled=!removable;
+  if(removable)button.textContent='删除「'+(profile.name||'当前账号')+'」';
 }
 async function switchRobot(identifier){
   if($('#plugin-dialog').open)$('#plugin-dialog').close();
@@ -855,7 +875,8 @@ async function switchRobot(identifier){
 }
 $('#delete-robot').onclick=()=>{
   const profile=robotRows.find(row=>row.id===robot);
-  if(!profile||robot==='default')return;
+  if(robot==='default'){toast('默认机器人对应项目根目录的配置，要删的是多开的那些账号',true);return;}
+  if(!profile){toast('机器人列表还没读取到，请稍后重试',true);return;}
   if(!confirm('删除「'+(profile.name||'当前账号')+'」？它的账号配置、群聊、插件设置和聊天记录都会一起删掉，不可恢复。'))return;
   action(async()=>{
     await api('robots/delete',{id:robot});

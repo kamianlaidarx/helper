@@ -290,6 +290,7 @@ td { padding: 16px 20px; vertical-align: middle; border-top: 1px solid var(--tab
 .group-owner-row { display: flex; align-items: center; gap: var(--space-2); padding-bottom: var(--space-2); }
 .group-owner-label { font: 12px/1.6 var(--font-data); color: var(--muted); flex: none; }
 .group-owner-row select { margin: 0; flex: 1 1 auto; min-width: 0; }
+.group-owner-search { margin: 0; flex: 0 1 150px; min-width: 90px; }
 .group-owner-row button { flex: none; }
 @media (max-width: 600px) { .group-name-row { grid-template-columns: 1fr; gap: var(--space-1); } }
 label { display: block; font-size: 13px; color: var(--ink); margin-top: var(--space-5); }
