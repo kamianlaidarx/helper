@@ -194,10 +194,14 @@ def fragment_note(text, *, limit=FRAGMENT_LIMIT):
             + "\n".join("- " + line for line in picked))
 
 
+DEFAULT = "如烟"
+"""没有单独配置过的会话用这个人格；`默认` 只是显式关掉人格的取值。"""
+
+
 @dataclass(frozen=True)
 class PersonalityState:
     room: str
-    name: str = "默认"
+    name: str = DEFAULT
     generation: int = 0
 
 

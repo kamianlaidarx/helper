@@ -14,7 +14,8 @@ from plugins.idiom_chain import Plugin as IdiomPlugin
 from wxbot_framework.dialogue import Dialogue
 from wxbot_framework.members import MemberError, SnapshotExpired
 from wxbot_framework.mentions import parse_at_members, strip_at_labels
-from wxbot_framework.personality import PROMPTS, PersonalityExpired, PersonalityState, prepare_switch, game_reply
+from wxbot_framework.personality import (DEFAULT, PROMPTS, PersonalityExpired, PersonalityState, game_reply,
+                                       prepare_switch)
 from wxbot_framework.runtime import BotApplication
 from wxbot_framework.sdk import Message
 from wxbot_framework.text import TextRouter
@@ -50,9 +51,10 @@ class PersonalityTests(unittest.TestCase):
         return plugin
 
     def test_personality_persists_and_isolated_from_other_groups_accounts_and_clear(self):
+        self.store.set_personality(OTHER_ROOM, "默认")
         state = self.store.set_personality(ROOM, "如烟")
         self.assertEqual(self.store.personality(OTHER_ROOM).name, "默认")
-        self.assertEqual(self.new_store("wxid_second_robot").personality(ROOM).name, "默认")
+        self.assertEqual(self.new_store("wxid_second_robot").personality(ROOM).name, DEFAULT)
         self.store.clear(ROOM)
         self.now += timedelta(seconds=1)
         self.store.rollover()
@@ -68,6 +70,7 @@ class PersonalityTests(unittest.TestCase):
         self.assertGreater(self.store.set_personality(ROOM, "默认").generation, state.generation)
 
     def test_cancel_removes_style_persists_and_keeps_records_and_other_groups(self):
+        self.store.set_personality(ROOM, "默认")
         initial = self.store.personality(ROOM)
         repeated = prepare_switch(self.message("/切换人格 取消"), self.store)
         self.assertEqual(repeated.data["personality_switch"], initial)
@@ -124,24 +127,27 @@ class PersonalityTests(unittest.TestCase):
             prepared = prepare_switch(self.message(command), self.store)
             plugin.on_message(prepared, self.ctx)
             self.assertIn("用法", self.backend.sent[-1][1])
-        self.assertEqual(self.store.personality(ROOM).name, "默认")
+        self.assertEqual(self.store.personality(ROOM).name, DEFAULT)
 
     def test_disabled_personality_plugin_does_not_apply_switch(self):
         app = object.__new__(BotApplication)
         app.config, app.members, app.plugins = {"chat_allowlist": []}, self.store, Mock()
         app.plugins.is_active.return_value = False
         app._emit(self.message("/切换人格 如烟"))
-        self.assertEqual(self.store.personality(ROOM).name, "默认")
+        self.assertEqual(self.store.personality(ROOM).name, DEFAULT)
         prepare_switch(self.message("/切换人格 如烟", data={"bot_generated": True}), self.store)
-        self.assertEqual(self.store.personality(ROOM).name, "默认")
+        self.assertEqual(self.store.personality(ROOM).name, DEFAULT)
 
-    def test_owner_phone_can_switch_and_default_style_does_not_modify_system(self):
+    def test_owner_phone_can_switch_and_cancelling_restores_the_plain_system(self):
         router = TextRouter(include_self_groups=True)
         router.set_account(ROBOT)
         data = router.convert(ROOM, ROBOT, ROBOT + ":\n/切换人格 如烟")
         self.assertTrue(data["dispatch_to_plugins"])
         provider = Mock(return_value={"reply": "回答"})
         self.ctx._llm = Mock(complete_json=provider)
+        self.ctx.llm_for(self.message("问题")).complete_json("原功能提示", "输入")
+        self.assertIn("当前人格：如烟", provider.call_args.args[0])
+        self.store.set_personality(ROOM, "默认")
         self.ctx.llm_for(self.message("问题")).complete_json("原功能提示", "输入")
         self.assertEqual(provider.call_args.args[0], "原功能提示")
 
