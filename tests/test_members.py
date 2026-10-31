@@ -130,6 +130,31 @@ class MemberTests(unittest.TestCase):
         with self.assertRaises(MemberError):
             self.store.history("成员乙", since=datetime.now())
 
+    def test_rooms_lists_configured_and_recorded_chats(self):
+        self.assertEqual(self.store.rooms(), [ROOM])
+        self.assertTrue(self.store.record(self.message("第一句", sequence=1)))
+        self.assertEqual(self.store.rooms(), [ROOM])
+        for limit in (True, 0, 1001, "3"):
+            with self.assertRaises(MemberError):
+                self.store.rooms(limit=limit)
+
+    def test_rooms_put_the_chat_with_the_newest_message_first(self):
+        other = "99999@chatroom"
+        self.options["groups"][other] = []
+        self.write_options()
+        store = self.create_store()
+        self.assertTrue(store.record(self.message("先到的", sequence=1)))
+        self.assertTrue(store.record(Message("后到的", other, JING, is_group=True, sequence=2, session_id="first")))
+        self.assertEqual(store.rooms(), [other, ROOM])
+
+    def test_rooms_survive_clearing_the_message_history(self):
+        self.store.bind("成员乙", ROOM, JING)
+        self.store.record(self.message("会被清掉的一句", sequence=1))
+        self.assertEqual([row["text"] for row in self.store.history("成员乙")], ["会被清掉的一句"])
+        self.store.clear(ROOM)
+        self.assertEqual(self.store.history("成员乙"), [])
+        self.assertEqual(self.store.rooms(), [ROOM])
+
     def test_disabled_history_keeps_member_directory(self):
         self.options["history_enabled"] = False
         self.write_options()

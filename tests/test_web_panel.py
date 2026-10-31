@@ -337,6 +337,30 @@ class ControllerTests(PanelFixture):
         with self.assertRaises(RuntimeError):
             waiting.result()
 
+    def test_chat_rows_merge_live_history_and_configured_groups(self):
+        app = SimpleNamespace(
+            backend=SimpleNamespace(chats=lambda: [{'chat_id': '111@chatroom', 'is_group': True}]),
+            members=SimpleNamespace(rooms=lambda: ['111@chatroom', '222@chatroom'],
+                                    groups={'222@chatroom', '333@chatroom'}))
+        rows = self.controller._chat_rows(app)
+        self.assertEqual([row['chat_id'] for row in rows], ['111@chatroom', '222@chatroom', '333@chatroom'])
+        self.assertNotIn('source', rows[0])
+        self.assertEqual(rows[1]['source'], 'history')
+        self.assertEqual(rows[2]['source'], 'config')
+        self.assertTrue(rows[1]['is_group'] and rows[2]['is_group'])
+
+    def test_chat_rows_tolerate_a_broken_history_store(self):
+        def boom():
+            raise RuntimeError('数据库坏了')
+
+        app = SimpleNamespace(
+            backend=SimpleNamespace(chats=lambda: [{'chat_id': '111@chatroom', 'is_group': True}]),
+            members=SimpleNamespace(rooms=boom, groups={'333@chatroom'}))
+        self.assertEqual([row['chat_id'] for row in self.controller._chat_rows(app)],
+                         ['111@chatroom', '333@chatroom'])
+        offline = SimpleNamespace(backend=None, members=None)
+        self.assertEqual(self.controller._chat_rows(offline), [])
+
     def test_offline_plugin_settings_persist_without_changing_other_plugins(self):
         before = self.controller.store.load()['plugins']['picture_idiom']
         self.controller.plugin_action({'name':'echo','action':'configure','options':{'enabled':False,'prefix':'ping '}})

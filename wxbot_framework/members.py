@@ -544,6 +544,24 @@ class MemberStore:
                 values.append(room)
             return [self._member(row) for row in self._connection().execute(sql + " ORDER BY room,person_key", values).fetchall()]
 
+    def rooms(self, limit=200):
+        """历史里出现过的会话；面板「发现群聊」用它，不依赖本进程是否收到过消息。"""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise MemberError("会话数量 limit 应为 1–1000 的整数")
+        with self._lock:
+            self.rollover()
+            connection = self._connection()
+            rooms = [row["room"] for row in connection.execute(
+                "SELECT room FROM messages WHERE account=? GROUP BY room ORDER BY MAX(id) DESC LIMIT ?",
+                (self.account, limit)).fetchall() if row["room"]]
+            for table in ("room_members", "people"):
+                for row in connection.execute(
+                        f"SELECT room FROM {table} WHERE account=? GROUP BY room LIMIT ?",
+                        (self.account, limit)).fetchall():
+                    if row["room"] and row["room"] not in rooms:
+                        rooms.append(row["room"])
+        return rooms[:limit]
+
     def find_by_wxid(self, wxid, room):
         with self._lock:
             row = self._connection().execute("SELECT * FROM people WHERE account=? AND room=? AND wxid=?",

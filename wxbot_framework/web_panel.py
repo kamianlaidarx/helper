@@ -482,7 +482,33 @@ class PanelController:
                     self.store.set_enabled(name, action == 'enable')
 
     def chats(self):
-        return self._call(lambda app: app.backend.chats() if app.backend and hasattr(app.backend, 'chats') else [])
+        return self._call(self._chat_rows)
+
+    def _chat_rows(self, app):
+        """已收到消息的会话 + 历史记录里的会话 + 已配置的群。
+
+        只读 backend.chats() 会让「发现群聊」在机器人刚启动、群里还没人说话时为空，
+        而群发页的会话列表又合并了配置里的群，两个列表看起来就会自相矛盾。
+        """
+        backend = getattr(app, 'backend', None)
+        rows = list(backend.chats()) if backend is not None and hasattr(backend, 'chats') else []
+        seen = {row.get('chat_id') for row in rows if isinstance(row, dict)}
+
+        def note(room, source):
+            if isinstance(room, str) and room and room not in seen:
+                seen.add(room)
+                rows.append({'chat_id': room, 'is_group': room.endswith('@chatroom'), 'source': source})
+
+        members = getattr(app, 'members', None)
+        if members is not None:
+            try:
+                for room in members.rooms():
+                    note(room, 'history')
+            except Exception:
+                logging.getLogger('WebPanel').debug('读取历史会话失败', exc_info=True)
+            for room in sorted(getattr(members, 'groups', None) or ()):
+                note(room, 'config')
+        return rows
 
     def plugin_editor(self, name):
         name = validate_name(name)

@@ -287,10 +287,12 @@ function renderGroupNames() {
 function renderDiscoveredGroups() {
   const node = $('#discovered-chats');
   node.className = discoveredGroups.length ? '' : 'empty';
+  const sourceLabels = {history:'历史记录', config:'已配置'};
   node.innerHTML = discoveredGroups.map(c => {
     const name = config?.group_names?.[c.chat_id] || c.name || '';
-    return `<div class="chat-row"><div>${escape(name || c.chat_id)}${name ? `<small>${escape(c.chat_id)}</small>` : ''}</div><button class="secondary small" data-room="${escape(c.chat_id)}">填入列表</button></div>`;
-  }).join('') || '暂无已接收消息的群。';
+    const source = sourceLabels[c.source] ? `<em class="chat-source">${sourceLabels[c.source]}</em>` : '';
+    return `<div class="chat-row"><div>${escape(name || c.chat_id)}${source}${name ? `<small>${escape(c.chat_id)}</small>` : ''}</div><button class="secondary small" data-room="${escape(c.chat_id)}">填入列表</button></div>`;
+  }).join('') || '还没有群：机器人没收到过群消息，也没有配置过群。在微信里打开一次目标群，或直接在下面手填群 ID。';
 }
 $('#group-ids').addEventListener('input', renderGroupNames);
 $('#group-name-list').addEventListener('input', event => {
