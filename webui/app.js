@@ -50,7 +50,7 @@ const pluginNames = {anti_recall:['文字防撤回'], anti_recall_image:['图片
 const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function api(path, body, identifier = robot) {
-  const scope = (path === 'robots' || path === 'accounts' || path.startsWith('accounts/') || path.startsWith('wechat-login/')) ? '' : (path.includes('?') ? '&' : '?') + 'robot=' + encodeURIComponent(identifier);
+  const scope = (path === 'robots' || path.startsWith('robots/') || path === 'accounts' || path.startsWith('accounts/') || path.startsWith('wechat-login/')) ? '' : (path.includes('?') ? '&' : '?') + 'robot=' + encodeURIComponent(identifier);
   const response = await fetch('/api/' + path + scope, {method: body === undefined ? 'GET' : 'POST', cache:'no-store',
     headers:{'X-Helper-Token':token, ...(body === undefined ? {} : {'Content-Type':'application/json'})},
     ...(body === undefined ? {} : {body:JSON.stringify(body)})});
@@ -829,7 +829,15 @@ window.addEventListener('hashchange',navigate);navigate();
 async function loadRobots(){
   const data=await api('robots');robotRows=data.robots;
   if(!robotRows.some(row=>row.id===robot))robot='default';
+  renderDeleteRobot();
   renderState();
+}
+function renderDeleteRobot(){
+  const button=$('#delete-robot');
+  if(!button)return;
+  const profile=robotRows.find(row=>row.id===robot);
+  button.hidden=robot==='default'||!profile;
+  if(!button.hidden)button.textContent='删除「'+(profile.name||'当前账号')+'」';
 }
 async function switchRobot(identifier){
   if($('#plugin-dialog').open)$('#plugin-dialog').close();
@@ -839,11 +847,22 @@ async function switchRobot(identifier){
   messageGeneration++;messages=[];messageCursor=0;messageStream='';messageError='';$('#message-search').value='';messageSignature='';renderMessages();
   robot=identifier;sessionStorage.setItem('helper-robot',robot);
   $('#robot-select').value=robot;
+  renderDeleteRobot();
   state=null;config=null;logs=[];logCursor=0;selectedPlugin='';renderLogs();
   renderState();renderAccounts();
   groupNameDraft=new Map(); discoveredGroups=[]; $('#group-ids').value=''; renderGroupNames(); renderDiscoveredGroups();
   await loadConfig();await poll();navigate();
 }
+$('#delete-robot').onclick=()=>{
+  const profile=robotRows.find(row=>row.id===robot);
+  if(!profile||robot==='default')return;
+  if(!confirm('删除「'+(profile.name||'当前账号')+'」？它的账号配置、群聊、插件设置和聊天记录都会一起删掉，不可恢复。'))return;
+  action(async()=>{
+    await api('robots/delete',{id:robot});
+    await loadRobots();await loadAccounts();await switchRobot('default');
+    toast('已删除并切换到默认机器人');
+  });
+};
 $('#robot-select').onchange=event=>{
   const value=event.target.value;
   action(async()=>{

@@ -69,7 +69,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 kind = {'html': 'text/html', 'css': 'text/css', 'js': 'application/javascript'}[name.rsplit('.', 1)[1]]
                 return self.send(200, raw, kind + '; charset=utf-8')
             hub = controller if hasattr(controller, 'robot') else None
-            global_routes = ('/api/robots', '/api/accounts', '/api/accounts/prepare', '/api/accounts/start',
+            global_routes = ('/api/robots', '/api/robots/delete', '/api/accounts', '/api/accounts/prepare',
+                             '/api/accounts/start',
                              '/api/wechat-login/start', '/api/wechat-login/attach',
                              '/api/wechat-login/status', '/api/wechat-login/cancel')
             if hub is not None and path not in global_routes:
@@ -103,6 +104,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                     raise PanelError('请求必须为 JSON 对象')
                 if path == '/api/robots' and hub is not None:
                     return self.send(200, hub.create_robot(data))
+                if path == '/api/robots/delete' and hub is not None:
+                    return self.send(200, hub.delete_robot(data))
                 if path == '/api/accounts/prepare' and hub is not None:
                     return self.send(200, hub.prepare_account(data))
                 if path == '/api/accounts/start' and hub is not None:

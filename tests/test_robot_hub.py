@@ -148,6 +148,54 @@ class HubTests(unittest.TestCase):
         atomic_json(self.hub.registry,{'robots':[{'id':'../../outside','name':'bad'}]})
         with self.assertRaises(PanelError):self.hub.entries()
 
+    def test_deleting_a_profile_frees_its_account_and_removes_its_workspace(self):
+        entry=self.hub.create_robot({'name':'第二个机器人'})
+        identifier=entry['id']
+        workspace=self.hub.workspace(identifier)
+        self.hub.robot(identifier).bind_account({'wxid':ACCOUNTS[0]['wxid'],'pid':1234})
+        self.assertTrue((workspace/'bot_config.json').is_file())
+        self.assertEqual(self.hub.delete_robot({'id':identifier}),{'ok':True,'id':identifier})
+        self.assertEqual([row['id'] for row in self.hub.entries()],['default'])
+        self.assertNotIn(identifier,[row['id'] for row in self.hub.robot_list()['robots']])
+        self.assertFalse(workspace.exists(),'工作目录应一并删除')
+        with self.assertRaises(PanelError):self.hub.workspace(identifier)
+        # 账号随机器人一起释放，可以绑到新机器人上
+        replacement=self.hub.create_robot({'name':'第三个机器人'})
+        self.hub.robot(replacement['id']).bind_account({'wxid':ACCOUNTS[0]['wxid'],'pid':1234})
+        self.assertEqual(read_json(self.hub.workspace(replacement['id'])/'bot_config.json')['wechat_account'],
+                         ACCOUNTS[0]['wxid'])
+
+    def test_deleting_default_or_unknown_profile_is_rejected(self):
+        entry=self.hub.create_robot({'name':'第二个机器人'})
+        before=self.hub.registry.read_bytes()
+        for data in ({'id':'default'},{'id':'0'*12},{'id':''},{}, {'id':123}):
+            with self.subTest(data=data),self.assertRaises(PanelError):self.hub.delete_robot(data)
+        self.assertEqual(self.hub.registry.read_bytes(),before)
+        self.assertEqual([row['id'] for row in self.hub.entries()],['default',entry['id']])
+
+    def test_http_routes_delete_removes_only_the_selected_profile(self):
+        server=PanelServer(self.hub,0)
+        thread=threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        def request(route,data=None):
+            conn=http.client.HTTPConnection('127.0.0.1',server.server_address[1],timeout=5)
+            conn.request('GET' if data is None else 'POST',route,
+                body=None if data is None else json.dumps(data),
+                headers={'X-Helper-Token':server.token,'Content-Type':'application/json'})
+            response=conn.getresponse()
+            status,body=response.status,json.loads(response.read())
+            conn.close()
+            return status,body
+        try:
+            identifier=request('/api/robots',{'name':'第二个机器人'})[1]['id']
+            self.assertEqual(request('/api/robots/delete',{'id':'default'})[0],400)
+            self.assertEqual(len(request('/api/robots')[1]['robots']),2)
+            self.assertEqual(request('/api/robots/delete',{'id':identifier})[0],200)
+            self.assertEqual([row['id'] for row in request('/api/robots')[1]['robots']],['default'])
+            self.assertEqual(request('/api/robots/delete',{'id':identifier})[0],404)
+        finally:
+            server.shutdown();server.server_close();thread.join(2)
+
     def test_http_routes_profile_changes_only_to_the_selected_bot(self):
         server=PanelServer(self.hub,0)
         thread=threading.Thread(target=server.serve_forever,daemon=True)

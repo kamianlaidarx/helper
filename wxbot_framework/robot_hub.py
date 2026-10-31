@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -222,6 +223,30 @@ class RobotHub:
             entries.append({'id': identifier, 'name': name.strip()})
             atomic_json(self.registry, {'robots': entries})
             return {'id': identifier, 'name': name.strip()}
+
+    def delete_robot(self, data):
+        """删掉一个附加机器人：先让它体面退出，再从列表移除，最后删掉它的工作目录。
+
+        默认机器人的配置就在项目根目录，误删等于删掉主配置，所以只允许删附加机器人。
+        """
+        identifier = data.get('id')
+        if not isinstance(identifier, str) or not identifier:
+            raise PanelError('请选择要删除的机器人')
+        if identifier == 'default':
+            raise PanelError('默认机器人对应项目根目录的配置，不能在这里删除')
+        with self.lock:
+            workspace = self.workspace(identifier)  # 不存在会抛 404
+            entries = self.entries()[1:]
+            worker = self.workers.pop(identifier, None)
+            if worker is not None:
+                try:
+                    worker.request('stop', {})
+                except PanelError:
+                    pass
+                worker.close()
+            atomic_json(self.registry, {'robots': [row for row in entries if row['id'] != identifier]})
+        shutil.rmtree(workspace, ignore_errors=True)
+        return {'ok': True, 'id': identifier}
 
     def _account_profiles(self, account):
         return [entry for entry in self.entries()
