@@ -4,9 +4,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import secrets
+import sys
 from urllib.parse import parse_qs, urlsplit
 
 from .panel_common import PanelError, redact
+
+# 浏览器刷新、关页面或换机器人时会直接掐断连接，这类错误不算服务端故障。
+# 只列“对方先挂”的几种；ConnectionRefusedError 之类是我们自己连不出去，仍然要报。
+DISCONNECTED = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, TimeoutError)
 
 
 class PanelServer(ThreadingHTTPServer):
@@ -22,6 +27,12 @@ class PanelServer(ThreadingHTTPServer):
         self.origins = {f'http://127.0.0.1:{port}', f'http://localhost:{port}'}
         self.hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
 
+    def handle_error(self, request, client_address):
+        # ThreadingHTTPServer 默认把断连也打成堆栈，日志里全是假的“操作失败”。
+        if isinstance(sys.exc_info()[1], DISCONNECTED):
+            return
+        super().handle_error(request, client_address)
+
 
 class PanelHandler(BaseHTTPRequestHandler):
     server_version = 'helper-local'
@@ -35,16 +46,20 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def send(self, status, data, kind='application/json; charset=utf-8'):
         raw = json.dumps(data, ensure_ascii=False).encode('utf-8') if isinstance(data, (dict, list)) else data
-        self.send_response(status)
-        self.send_header('Content-Type', kind)
-        self.send_header('Content-Length', str(len(raw)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', kind)
+            self.send_header('Content-Length', str(len(raw)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('X-Frame-Options', 'DENY')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+            self.end_headers()
+            self.wfile.write(raw)
+        except DISCONNECTED:
+            # 对方已经挂断：写不出去就算了，别把断连当成操作失败再抛一次。
+            self.close_connection = True
 
     def _check(self, *, api=False):
         if self.headers.get('Host') not in self.server.hosts:
@@ -189,7 +204,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.send(error.status, {'error': redact(error)})
         except (ValueError, TypeError, KeyError) as error:
             self.send(400, {'error': redact(error)})
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        except DISCONNECTED:
             pass
         except Exception as error:
             logging.getLogger('WebPanel').exception('管理操作失败')

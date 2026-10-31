@@ -1,6 +1,7 @@
 """本地管理台：进程所有权、配置保留、任务线程和 HTTP 隔离。"""
 from concurrent.futures import Future
 import http.client
+from http.server import ThreadingHTTPServer
 import json
 import logging
 from pathlib import Path
@@ -15,7 +16,8 @@ from unittest.mock import Mock, patch
 
 from wxbot_framework.config import ConfigStore
 from wxbot_framework.runtime import BotApplication
-from wxbot_framework.web_panel import LogBuffer, PanelController, PanelError, PanelServer, read_json
+from wxbot_framework.web_panel import (LogBuffer, PanelController, PanelError, PanelHandler,
+                                       PanelServer, read_json)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -538,6 +540,51 @@ class LogTests(unittest.TestCase):
         self.assertEqual(len(rows['rows']),1)
         self.assertNotIn('a'*24,rows['rows'][0]['message'])
         self.assertEqual(rows['cursor'],2)
+
+
+class DisconnectTests(unittest.TestCase):
+    """浏览器刷新或关页面会掐断请求，这类断连不该被记成操作失败。"""
+
+    class Gone:
+        send = PanelHandler.send
+
+        def __init__(self):
+            self.close_connection = False
+            self.status = None
+            self.wfile = SimpleNamespace(write=self._write)
+
+        def _write(self, raw):
+            raise ConnectionAbortedError(10053, '你的主机中的软件中止了一个已建立的连接')
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, *args):
+            pass
+
+        def end_headers(self):
+            pass
+
+    def test_a_client_hanging_up_mid_response_is_not_an_error(self):
+        handler = self.Gone()
+        handler.send(200, {'ok': True})
+        self.assertEqual(handler.status, 200)
+        self.assertTrue(handler.close_connection)
+
+    def test_the_server_prints_a_stack_only_for_real_failures(self):
+        server = PanelServer.__new__(PanelServer)
+        with patch.object(ThreadingHTTPServer, 'handle_error') as parent:
+            try:
+                raise ConnectionAbortedError(10053, '中止')
+            except ConnectionAbortedError:
+                server.handle_error(None, ('127.0.0.1', 1))
+        parent.assert_not_called()
+        with patch.object(ThreadingHTTPServer, 'handle_error') as parent:
+            try:
+                raise ValueError('真的出错了')
+            except ValueError:
+                server.handle_error(None, ('127.0.0.1', 1))
+        parent.assert_called_once()
 
 
 if __name__ == '__main__':
