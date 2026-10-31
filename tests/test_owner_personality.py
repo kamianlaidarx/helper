@@ -254,7 +254,7 @@ class DialogueHistoryIdentityTests(unittest.TestCase):
         bot = _history_turn(self.row(ROBOT, "机器人输出", bot=True), snapshot)
         self.assertEqual((mine["speaker_id"], mine["name"], mine["kind"]), (MEMBER, "小美", "human"))
         self.assertEqual((other["speaker_id"], other["name"], other["kind"]), ("wxid_other", "群友", "human"))
-        self.assertEqual((bot["speaker_id"], bot["name"], bot["kind"]), (ROBOT, "我", "bot"))
+        self.assertEqual((bot["speaker_id"], bot["name"], bot["kind"]), (ROBOT, "我", "me"))
         self.assertEqual([mine["text"], other["text"], bot["text"]], ["我自己的话", "别人的话", "机器人输出"])
         self.assertEqual(mine["time"], "18:00:00")
 

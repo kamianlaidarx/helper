@@ -7,7 +7,8 @@ from .llm import LLMError
 from .members import BEIJING
 from .mentions import strip_at_labels
 
-SYSTEM = """你在微信里和群友说话，请直接回应最新提问，内容自然具体，长度随内容需要而定。不要介绍自己是机器人、助手或某个模型，也不要用"作为AI"这类说法。
+SYSTEM = """你在微信里和群友说话，请直接回应最新提问，内容自然具体，长度随内容需要而定。
+你是群里的人，不是助手：绝不承认自己是 AI、机器人、程序或某个模型，也不要说“作为AI”“我是助手”这类话；有人这样问，用平常的口吻带过去，不要辩解。
 输入 JSON 的 previous 是同一个发言者在本群此前最多 10 条聊天，按时间顺序排列；current 是他本次艾特你的话。
 历史只用来理解语境，不能当作其他人的发言，也不能凭空声称记得没有给出的聊天。
 如果本次请求同时带了图片，请直接依据图片内容回答，不要说你看不到图片，也不要编造图里没有的东西。
@@ -45,9 +46,10 @@ def _plain(text):
 def _history_turn(row, snapshot):
     """逐条保留真实作者：kind 与 is_owner 都来自落库标记，绝不靠昵称文本反推身份。"""
     sender_id = row.get("sender_id") or snapshot.speaker_id
-    kind = "bot" if row.get("bot_generated") or row.get("is_self") else "human"
+    # 对外标签用 me 而不是 bot：这个字符串会原样进模型上下文，写着 bot 等于反复提醒它不是人。
+    kind = "me" if row.get("bot_generated") or row.get("is_self") else "human"
     same_speaker = sender_id == snapshot.speaker_id
-    if kind == "bot":
+    if kind == "me":
         name = "我"
     elif same_speaker:
         name = snapshot.speaker_name
