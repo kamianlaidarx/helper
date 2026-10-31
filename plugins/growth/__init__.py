@@ -19,6 +19,18 @@ INTERVAL_SECONDS = 1800
 
 
 class Plugin:
+    def __init__(self):
+        # 框架会在 on_load 之前就可能调用业务入口，先给个安全初值。
+        self.llm = None
+
+    def on_message(self, ctx, message):
+        """成长层不听消息：共振和事实由 group_memory 写，这里只按时间自己跑。
+
+        框架要求每个插件都有 on_message（plugins.py 加载时硬校验），
+        所以这是个必要的空实现，不是占位。
+        """
+        return False
+
     def on_load(self, ctx):
         self.llm = getattr(ctx, "llm", None)
         self.stopped = threading.Event()
