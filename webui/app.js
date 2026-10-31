@@ -31,7 +31,7 @@ const token = $('meta[name="helper-token"]').content;
 let state = null, config = null, logCursor = 0, logs = [], paused = false, busy = false;
 let selectedPlugin = '', toastTimer, pollBusy = false, serviceAvailable = true;
 let pluginEditor = null, pluginEditorGeneration = 0, pluginFunctionSignature = '';
-let robot = sessionStorage.getItem('helper-robot') || 'default', robotRows = [], lastRobotFetch = 0;
+let robot = localStorage.getItem('helper-robot') || 'default', robotRows = [], robotHidden = [], lastRobotFetch = 0;
 let pluginSignature = '', accountSignature = '', robotOptionsSignature = '';
 let messages=[], messageCursor=0, messageStream='', messagePaused=false, messageError='', messageGeneration=0, messageSignature='';
 let loggedAccounts = [], selectedAccounts = new Set(), accountsError = '', accountsLoading = true, accountsFetching = false, lastAccountFetch = 0, batchStarting = false;
@@ -850,20 +850,29 @@ taskKind();
 document.querySelectorAll('[data-page]').forEach(link=>link.addEventListener('click',()=>{if(link.hash===location.hash)navigate();}));
 window.addEventListener('hashchange',navigate);navigate();
 async function loadRobots(){
-  const data=await api('robots');robotRows=data.robots;
-  if(!robotRows.some(row=>row.id===robot))robot='default';
+  const data=await api('robots');robotRows=data.robots;robotHidden=data.hidden||[];
+  // 上次选的账号没了（被删或被隐藏）就挑第一个能用的，别又落回默认机器人。
+  if(!robotRows.some(row=>row.id===robot))robot=robotRows.length?robotRows[0].id:'default';
   renderDeleteRobot();
+  renderRestoreRobot();
   renderState();
 }
 function renderDeleteRobot(){
   const button=$('#delete-robot');
   if(!button)return;
   const profile=robotRows.find(row=>row.id===robot);
-  const removable=robot!=='default'&&!!profile;
+  const removable=robot==='default'?robotRows.length>1:!!profile;
   // hidden 属性会被 .secondary{display:inline-flex} 盖掉，只能用 !important 的 .hidden。
   button.classList.toggle('hidden',!removable);
   button.disabled=!removable;
-  if(removable)button.textContent='删除「'+(profile.name||'当前账号')+'」';
+  if(removable)button.textContent=robot==='default'?'隐藏「默认机器人」':'删除「'+(profile.name||'当前账号')+'」';
+}
+function renderRestoreRobot(){
+  const button=$('#restore-robot');
+  if(!button)return;
+  const hidden=robotHidden.includes('default');
+  button.classList.toggle('hidden',!hidden);
+  button.disabled=!hidden;
 }
 async function switchRobot(identifier){
   if($('#plugin-dialog').open)$('#plugin-dialog').close();
@@ -871,7 +880,7 @@ async function switchRobot(identifier){
   resetComposer();
   taskRows=[];taskActions=[];taskActionSignature='';taskGeneration++;resetTaskForm();renderTasks();
   messageGeneration++;messages=[];messageCursor=0;messageStream='';messageError='';$('#message-search').value='';messageSignature='';renderMessages();
-  robot=identifier;sessionStorage.setItem('helper-robot',robot);
+  robot=identifier;try{localStorage.setItem('helper-robot',robot);}catch{}
   $('#robot-select').value=robot;
   renderDeleteRobot();
   state=null;config=null;logs=[];logCursor=0;selectedPlugin='';renderLogs();
@@ -881,15 +890,31 @@ async function switchRobot(identifier){
 }
 $('#delete-robot').onclick=()=>{
   const profile=robotRows.find(row=>row.id===robot);
-  if(robot==='default'){toast('默认机器人对应项目根目录的配置，要删的是多开的那些账号',true);return;}
+  if(robot==='default'){
+    if(robotRows.length<=1){toast('这是最后一个机器人，隐藏后下拉里就没有可选的账号了',true);return;}
+    if(!confirm('隐藏「默认机器人」？它会从下拉里消失、进程停掉，配置仍留在项目根目录，之后可以用「恢复默认机器人」找回来。'))return;
+    action(async()=>{
+      await api('robots/delete',{id:'default'});
+      await loadRobots();await loadAccounts();
+      if(robot==='default')await switchRobot(robotRows.length?robotRows[0].id:'default');
+      toast('已隐藏默认机器人');
+    });
+    return;
+  }
   if(!profile){toast('机器人列表还没读取到，请稍后重试',true);return;}
   if(!confirm('删除「'+(profile.name||'当前账号')+'」？它的账号配置、群聊、插件设置和聊天记录都会一起删掉，不可恢复。'))return;
   action(async()=>{
     await api('robots/delete',{id:robot});
-    await loadRobots();await loadAccounts();await switchRobot('default');
-    toast('已删除并切换到默认机器人');
+    await loadRobots();await loadAccounts();
+    await switchRobot(robotRows.length?robotRows[0].id:'default');
+    toast('已删除并切换到下一个机器人');
   });
 };
+$('#restore-robot').onclick=()=>action(async()=>{
+  await api('robots/restore',{id:'default'});
+  await loadRobots();await loadAccounts();
+  toast('默认机器人已恢复到下拉里');
+});
 $('#robot-select').onchange=event=>{
   const value=event.target.value;
   action(async()=>{

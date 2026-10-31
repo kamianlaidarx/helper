@@ -188,6 +188,14 @@ class RobotHub:
             seen.add(row['id'])
         return [{'id': 'default', 'name': '默认机器人'}, *entries]
 
+    def hidden_ids(self):
+        """被隐藏的机器人：配置还在，只是不在下拉里出现。"""
+        hidden = read_json(self.registry).get('hidden')
+        if not isinstance(hidden, list):
+            return []
+        known = {row['id'] for row in self.entries()}
+        return [identifier for identifier in hidden if isinstance(identifier, str) and identifier in known]
+
     def workspace(self, identifier):
         if identifier not in {row['id'] for row in self.entries()}:
             raise PanelError('未找到这个机器人', 404)
@@ -227,16 +235,18 @@ class RobotHub:
     def delete_robot(self, data):
         """删掉一个附加机器人：先让它体面退出，再从列表移除，最后删掉它的工作目录。
 
-        默认机器人的配置就在项目根目录，误删等于删掉主配置，所以只允许删附加机器人。
+        默认机器人的工作目录就是项目根目录，真删等于把程序和全部配置一起删掉。
+        所以对它只做「隐藏」：从下拉里拿掉、停掉进程，配置原样留在根目录，随时能恢复。
         """
         identifier = data.get('id')
         if not isinstance(identifier, str) or not identifier:
             raise PanelError('请选择要删除的机器人')
         if identifier == 'default':
-            raise PanelError('默认机器人对应项目根目录的配置，不能在这里删除')
+            return self.hide_robot({'id': 'default'})
         with self.lock:
             workspace = self.workspace(identifier)  # 不存在会抛 404
             entries = self.entries()[1:]
+            hidden = [row for row in self.hidden_ids() if row != identifier]
             worker = self.workers.pop(identifier, None)
             if worker is not None:
                 try:
@@ -244,8 +254,41 @@ class RobotHub:
                 except PanelError:
                     pass
                 worker.close()
-            atomic_json(self.registry, {'robots': [row for row in entries if row['id'] != identifier]})
+            atomic_json(self.registry, {'robots': [row for row in entries if row['id'] != identifier],
+                                        'hidden': hidden})
         shutil.rmtree(workspace, ignore_errors=True)
+        return {'ok': True, 'id': identifier}
+
+    def hide_robot(self, data):
+        """把机器人从下拉里拿掉但保留配置；项目根目录那份只能隐藏，不能删。"""
+        identifier = data.get('id')
+        if not isinstance(identifier, str) or not identifier:
+            raise PanelError('请选择要隐藏的机器人')
+        with self.lock:
+            self.workspace(identifier)  # 不存在会抛 404
+            hidden = self.hidden_ids()
+            if identifier in hidden:
+                return {'ok': True, 'id': identifier, 'hidden': True}
+            if len(self.entries()) - len(hidden) <= 1:
+                raise PanelError('这是最后一个能用的机器人，隐藏后下拉里就没有可选的账号了')
+            worker = self.workers.pop(identifier, None)
+            if worker is not None:
+                try:
+                    worker.request('stop', {})
+                except PanelError:
+                    pass
+                worker.close()
+            atomic_json(self.registry, {'robots': self.entries()[1:], 'hidden': [*hidden, identifier]})
+        return {'ok': True, 'id': identifier, 'hidden': True}
+
+    def restore_robot(self, data):
+        identifier = data.get('id')
+        if not isinstance(identifier, str) or not identifier:
+            raise PanelError('请选择要恢复的机器人')
+        with self.lock:
+            self.workspace(identifier)  # 不存在会抛 404
+            hidden = [row for row in self.hidden_ids() if row != identifier]
+            atomic_json(self.registry, {'robots': self.entries()[1:], 'hidden': hidden})
         return {'ok': True, 'id': identifier}
 
     def _account_profiles(self, account):
@@ -267,7 +310,8 @@ class RobotHub:
     def logged_accounts(self):
         # 发现账号不创建配置、不绑定账号，也不启动机器人。
         rows = self.scan(self.root)
-        profiles = self.robot_list()['robots']
+        # 隐藏的机器人配置还在，同一个账号不能被当成“空闲”再启动一次。
+        profiles = self.robot_list(include_hidden=True)['robots']
         result = []
         for row in rows:
             matches = [profile for profile in profiles if profile['account'] == row['wxid']]
@@ -382,12 +426,15 @@ class RobotHub:
                 return worker.request(route, data)
         return worker.request(route, data)
 
-    def robot_list(self):
+    def robot_list(self, *, include_hidden=False):
         result = []
         with self.lock:
             entries = self.entries()
+            hidden = set(self.hidden_ids())
             workers = dict(self.workers)
         for entry in entries:
+            if entry['id'] in hidden and not include_hidden:
+                continue
             account = read_json(self.workspace(entry['id']) / 'bot_config.json').get('wechat_account') or ''
             state, connected = 'stopped', False
             worker = workers.get(entry['id'])
@@ -397,8 +444,8 @@ class RobotHub:
                     state, connected = snapshot['state'], snapshot['connected']
                 except PanelError:
                     state = 'error'
-            result.append(dict(entry, account=account, state=state, connected=connected))
-        return {'robots': result}
+            result.append(dict(entry, account=account, state=state, connected=connected, hidden=entry['id'] in hidden))
+        return {'robots': result, 'hidden': sorted(hidden)}
 
     def close(self):
         self.stop_event.set()

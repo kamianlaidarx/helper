@@ -165,13 +165,38 @@ class HubTests(unittest.TestCase):
         self.assertEqual(read_json(self.hub.workspace(replacement['id'])/'bot_config.json')['wechat_account'],
                          ACCOUNTS[0]['wxid'])
 
-    def test_deleting_default_or_unknown_profile_is_rejected(self):
+    def test_deleting_default_hides_it_and_keeps_the_root_configuration(self):
         entry=self.hub.create_robot({'name':'第二个机器人'})
         before=self.hub.registry.read_bytes()
-        for data in ({'id':'default'},{'id':'0'*12},{'id':''},{}, {'id':123}):
+        for data in ({'id':'0'*12},{'id':''},{}, {'id':123}):
             with self.subTest(data=data),self.assertRaises(PanelError):self.hub.delete_robot(data)
         self.assertEqual(self.hub.registry.read_bytes(),before)
-        self.assertEqual([row['id'] for row in self.hub.entries()],['default',entry['id']])
+        # 项目根目录不能被删，只能隐藏：配置还在，只是不再出现在下拉里。
+        self.assertEqual(self.hub.delete_robot({'id':'default'}),{'ok':True,'id':'default','hidden':True})
+        listed=self.hub.robot_list()
+        self.assertEqual([row['id'] for row in listed['robots']],[entry['id']])
+        self.assertEqual(listed['hidden'],['default'])
+        self.assertTrue((self.hub.root/'bot_config.json').exists())
+        self.assertEqual(self.hub.workspace('default'),self.hub.root)
+        self.assertEqual(self.hub.restore_robot({'id':'default'}),{'ok':True,'id':'default'})
+        self.assertEqual([row['id'] for row in self.hub.robot_list()['robots']],['default',entry['id']])
+        self.assertEqual(self.hub.robot_list()['hidden'],[])
+
+    def test_the_last_robot_cannot_be_hidden(self):
+        with self.assertRaises(PanelError):self.hub.hide_robot({'id':'default'})
+        entry=self.hub.create_robot({'name':'第二个机器人'})
+        self.hub.delete_robot({'id':entry['id']})
+        with self.assertRaises(PanelError):self.hub.delete_robot({'id':'default'})
+        self.assertEqual([row['id'] for row in self.hub.robot_list()['robots']],['default'])
+
+    def test_a_hidden_profile_still_reserves_its_account(self):
+        entry=self.hub.create_robot({'name':'第二个机器人'})
+        self.hub.robot(entry['id']).bind_account({'wxid':ACCOUNTS[0]['wxid'],'pid':1234})
+        self.hub.hide_robot({'id':entry['id']})
+        # 面板的“发现账号”按 include_hidden 统计，隐藏的配置仍然占着这个账号。
+        everyone=self.hub.robot_list(include_hidden=True)['robots']
+        self.assertEqual([row['account'] for row in everyone if row['id']==entry['id']],[ACCOUNTS[0]['wxid']])
+        self.assertNotIn(entry['id'],[row['id'] for row in self.hub.robot_list()['robots']])
 
     def test_http_routes_delete_removes_only_the_selected_profile(self):
         server=PanelServer(self.hub,0)
@@ -188,7 +213,10 @@ class HubTests(unittest.TestCase):
             return status,body
         try:
             identifier=request('/api/robots',{'name':'第二个机器人'})[1]['id']
-            self.assertEqual(request('/api/robots/delete',{'id':'default'})[0],400)
+            # 默认机器人走隐藏：返回 200，但配置留在原地，还能恢复。
+            self.assertEqual(request('/api/robots/delete',{'id':'default'})[0],200)
+            self.assertEqual([row['id'] for row in request('/api/robots')[1]['robots']],[identifier])
+            self.assertEqual(request('/api/robots/restore',{'id':'default'})[0],200)
             self.assertEqual(len(request('/api/robots')[1]['robots']),2)
             self.assertEqual(request('/api/robots/delete',{'id':identifier})[0],200)
             self.assertEqual([row['id'] for row in request('/api/robots')[1]['robots']],['default'])
