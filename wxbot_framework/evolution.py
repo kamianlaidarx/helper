@@ -21,6 +21,7 @@ GROWTH_INTERVAL_HOURS = 24.0
 GROWTH_MIN_MATERIAL = 5
 SAMPLE_FACTS = 12
 SAMPLE_PEOPLE = 8
+SAMPLE_SAID = 12
 
 SYSTEM = """你在替一个长期待在同一个聊天里的角色写「日结」：她这段时间在那儿是什么样子。
 
@@ -30,7 +31,9 @@ SYSTEM = """你在替一个长期待在同一个聊天里的角色写「日结�
 输出 JSON：{"growth":"不超过 300 字的连续中文"}。内容包括且只包括：
 1. 在这个聊天里说话该长还是短、要不要留白；
 2. 哪类话题上更放松，哪类话题上得更收着；
-3. 这群人之间独有的说法、称呼或梗（没有就不写）。
+3. 自己说话的习性：标点、语气词、爱用什么样的句尾（照「你最近说过的话」归纳，
+   归纳的是习惯而不是抄句子）；
+4. 这群人之间独有的说法、称呼或梗（没有就不写）。
 不要重复给出的事实的原文，不要写「我是某某」这类介绍。"""
 
 
@@ -92,15 +95,34 @@ def _fact_lines(state):
     return lines
 
 
-def build_user(state):
-    """把事实和人物关系整理成给模型看的一段材料。"""
+def _said_lines(members, chat_id):
+    """她自己最近在这个聊天里说过的话；读不到就当没有。"""
+    if members is None or not chat_id:
+        return []
+    try:
+        said = members.said(chat_id, SAMPLE_SAID)
+    except Exception:
+        return []
+    lines = []
+    for text in said or ():
+        body = " ".join(str(text or "").split())
+        if body:
+            lines.append("- " + body)
+    return lines
+
+
+def build_user(state, *, members=None):
+    """把事实、人物关系和自己的说话样本整理成给模型看的一段材料。"""
     people = _people_lines(state)
     facts = _fact_lines(state)
+    said = _said_lines(members, state.get("chat_id") or "")
     blocks = []
     if people:
         blocks.append("常出现的人：\n" + "\n".join(people))
     if facts:
         blocks.append("已经记住的事：\n" + "\n".join(facts))
+    if said:
+        blocks.append("你最近在这个聊天里说过的话（归纳习性，不要照抄）：\n" + "\n".join(said))
     growth = _state(state)
     if growth.get("text"):
         blocks.append("上一版日结（可以修，不要整段照抄）：\n" + growth["text"])
@@ -143,14 +165,14 @@ def note(state):
             "按它说话，但不要念出来，也不要说「我记得我说过」。\n" + body)
 
 
-def consolidate(client, chat_id, *, now=None):
+def consolidate(client, chat_id, *, now=None, members=None):
     """给一个聊天跑一次日结；返回是否真的更新了。失败一律吞掉。"""
     now = now or datetime.now(timezone.utc)
     try:
         state = memory.load(chat_id)
         if not due(state, now=now):
             return False
-        user = build_user(state)
+        user = build_user(state, members=members)
         if not user.strip():
             return False
         result = client.complete_json(SYSTEM, user)
@@ -184,7 +206,8 @@ def _chats():
     return found
 
 
-def sweep(client, *, now=None):
+def sweep(client, *, now=None, members=None):
     """扫一遍所有聊天，把到期的跑掉；返回真正更新的个数。"""
     now = now or datetime.now(timezone.utc)
-    return sum(1 for chat_id in _chats() if consolidate(client, chat_id, now=now))
+    return sum(1 for chat_id in _chats()
+               if consolidate(client, chat_id, now=now, members=members))

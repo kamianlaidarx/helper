@@ -562,6 +562,18 @@ class MemberStore:
                         rooms.append(row["room"])
         return rooms[:limit]
 
+    def said(self, room, limit=12):
+        """机器人在这个会话里最近说过的话，按时间正序；成长层用它学自己的语感。"""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise MemberError("最近发言条数 limit 应为 1–100 的整数")
+        with self._lock:
+            rows = self._connection().execute(
+                "SELECT text FROM messages WHERE account=? AND room=? AND is_self=1 "
+                "ORDER BY id DESC LIMIT ?",
+                (self.account, room, limit)).fetchall()
+        lines = [" ".join((row["text"] or "").split()) for row in rows]
+        return [text for text in reversed(lines) if text]
+
     def find_by_wxid(self, wxid, room):
         with self._lock:
             row = self._connection().execute("SELECT * FROM people WHERE account=? AND room=? AND wxid=?",

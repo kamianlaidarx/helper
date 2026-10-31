@@ -20,9 +20,9 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-TYPING_PER_CHAR_S = 0.045
-TYPING_MIN_S = 0.6
-TYPING_MAX_S = 8.0
+TYPING_PER_CHAR_S = 0.18
+TYPING_MIN_S = 1.2
+TYPING_MAX_S = 12.0
 TYPING_SIGMA = 0.6
 
 OWNER_REPLY = 0.95

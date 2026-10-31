@@ -138,6 +138,20 @@ class MemberTests(unittest.TestCase):
             with self.assertRaises(MemberError):
                 self.store.rooms(limit=limit)
 
+    def test_said_returns_only_my_own_lines_in_chronological_order(self):
+        self.store.record(self.message("别人说的", sequence=1))
+        self.store.record(self.message("我说的第一句", sender=ROBOT, sequence=2, is_self=True))
+        self.store.record(self.message("   ", sender=ROBOT, sequence=3, is_self=True))
+        self.store.record(self.message("我说的第二句", sender=ROBOT, sequence=4, is_self=True))
+        self.assertEqual(self.store.said(ROOM), ["我说的第一句", "我说的第二句"])
+        self.assertEqual(self.store.said(ROOM, limit=1), ["我说的第二句"])
+
+    def test_said_rejects_bad_limits_and_unknown_rooms_are_empty(self):
+        for limit in (True, 0, 101, "3"):
+            with self.assertRaises(MemberError):
+                self.store.said(ROOM, limit=limit)
+        self.assertEqual(self.store.said("99999@chatroom"), [])
+
     def test_rooms_put_the_chat_with_the_newest_message_first(self):
         other = "99999@chatroom"
         self.options["groups"][other] = []

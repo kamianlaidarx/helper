@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from wxbot_framework import evolution, memory
 
@@ -94,6 +94,28 @@ class MachineTests(unittest.TestCase):
         self.assertIn("很熟", text)
         self.assertIn("事实0", text)
 
+    def test_build_user_adds_my_own_recent_lines(self):
+        members = Mock()
+        members.said.return_value = ["行", "这不太对吧？"]
+        text = evolution.build_user(state_with(), members=members)
+        members.said.assert_called_once_with("room@chatroom", evolution.SAMPLE_SAID)
+        self.assertIn("你最近在这个聊天里说过的话", text)
+        self.assertIn("- 行", text)
+        self.assertIn("- 这不太对吧？", text)
+
+    def test_build_user_without_members_or_samples_changes_nothing(self):
+        quiet = Mock()
+        quiet.said.return_value = []
+        self.assertNotIn("你最近在这个聊天里说过的话", evolution.build_user(state_with()))
+        self.assertNotIn("你最近在这个聊天里说过的话", evolution.build_user(state_with(), members=quiet))
+
+    def test_build_user_survives_a_members_failure(self):
+        broken = Mock()
+        broken.said.side_effect = RuntimeError("读历史挂了")
+        text = evolution.build_user(state_with(), members=broken)
+        self.assertNotIn("你最近在这个聊天里说过的话", text)
+        self.assertIn("事实0", text)
+
     def test_consolidate_skips_when_not_due(self):
         client = self.client({"growth": "不该被用到"})
         with tempfile.TemporaryDirectory() as folder, \
@@ -124,6 +146,20 @@ class MachineTests(unittest.TestCase):
                                .read_text(encoding="utf-8"))
             self.assertEqual(saved["chat_id"], "room@chatroom")
             self.assertIn("写点新的", saved["growth"]["text"])
+
+    def test_consolidate_and_sweep_pass_members_into_the_material(self):
+        client = self.client({"growth": "写点新的。"})
+        members = Mock()
+        members.said.return_value = ["嗯"]
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(memory, "STATE_ROOT", Path(folder)):
+            memory.save("room@chatroom", state_with())
+            self.assertTrue(evolution.consolidate(client, "room@chatroom", members=members))
+            members.said.assert_called_once_with("room@chatroom", evolution.SAMPLE_SAID)
+            memory.save("room@chatroom", state_with())
+            members.said.reset_mock()
+            evolution.sweep(client, members=members)
+            self.assertTrue(members.said.called)
 
     def test_client_failure_is_swallowed(self):
         client = self.client(None, error=RuntimeError("接口挂了"))
