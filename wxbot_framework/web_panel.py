@@ -128,8 +128,13 @@ class PanelController:
             raise PanelError('此项目已在其他窗口运行，请先在原窗口输入 quit', 409) from None
 
     @contextmanager
-    def _editing(self):
-        if self.worker is not None and self.worker.is_alive():
+    def _editing(self, *, allow_running=False):
+        running = self.worker is not None and self.worker.is_alive()
+        if running and allow_running:
+            # 机器人就跑在本进程里，bot.lock 已经在手上：只要不重入死等就能直接写。
+            yield
+            return
+        if running:
             raise PanelError('请先停止机器人，等清理完成后再保存配置', 409)
         lease = self.lock_factory(self.workspace / '.runtime/bot.lock')
         try:
@@ -338,7 +343,7 @@ class PanelController:
             raise
 
     def save_configuration(self, data):
-        with self.actions, self.lock, self._editing():
+        with self.actions, self.lock, self._editing(allow_running=True):
             config = self.store.load()
             paths, changes = self._paths(config), {}
             if 'chat_allowlist' in data:
@@ -454,6 +459,11 @@ class PanelController:
                 changes[paths['members']] = members
             changes[self.store.path] = config
             self._save_many(changes)
+        # 运行中的机器人自己重读一遍：群、老板、白名单、发送节奏立刻生效。
+        if self.worker is not None and self.worker.is_alive():
+            self._call(lambda app: app.apply_config(self.store.load()))
+        return {'ok': True, 'restart': [label for key, label in
+            (('llm', '大模型配置'), ('tts', '语音配置')) if key in data]}
 
     def plugin_action(self, data):
         name, action = validate_name(data.get('name')), data.get('action')
@@ -463,13 +473,16 @@ class PanelController:
             raise PanelError('未找到该插件', 404)
         with self.actions:
             if action == 'configure':
-                with self.lock, self._editing():
+                with self.lock, self._editing(allow_running=True):
                     options = data.get('options')
                     if not isinstance(options, dict) or ('enabled' in options and type(options['enabled']) is not bool):
                         raise PanelError('插件配置应为 JSON 对象，enabled 应为布尔值')
                     config = self.store.load()
                     config.setdefault('plugins', {})[name] = options
                     self._save_many({self.store.path: config})
+                # 插件配置写的是主配置，运行中要让它重读一次才会用上新选项。
+                if self.worker is not None and self.worker.is_alive():
+                    self._call(lambda app: app.apply_config(self.store.load(), reload_plugins=(name,)))
                 return
             with self.lock:
                 running = self.app is not None

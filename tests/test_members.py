@@ -152,6 +152,17 @@ class MemberTests(unittest.TestCase):
                 self.store.said(ROOM, limit=limit)
         self.assertEqual(self.store.said("99999@chatroom"), [])
 
+    def test_reload_picks_up_new_groups_and_owners_without_rebuilding(self):
+        other = "99999@chatroom"
+        self.options["groups"][other] = []
+        self.options["owner_ids"] = {other: ["wxid_owner"]}
+        self.write_options()
+        self.assertNotIn(other, self.store.groups)
+        self.store.reload()
+        # 面板在机器人运行中保存群/老板配置后走这条路，不用重启。
+        self.assertIn(other, self.store.groups)
+        self.assertEqual(self.store.owner_ids(other), frozenset({"wxid_owner"}))
+
     def test_rooms_put_the_chat_with_the_newest_message_first(self):
         other = "99999@chatroom"
         self.options["groups"][other] = []

@@ -335,7 +335,13 @@ async function loadGroupMembers(room) {
   renderGroupNames();
   return rows.length;
 }
-async function save(data, message) { await api('config',data); await loadConfig(); toast(message||'配置已保存，下次启动生效'); }
+async function save(data, message) {
+  const result = await api('config', data);
+  await loadConfig();
+  const restart = (result && result.restart) || [];
+  toast(restart.length ? `${message || '配置已保存'}；${restart.join('、')}要重启机器人才生效`
+    : (message || '配置已保存，运行中的机器人会立刻用上新设置'));
+}
 $('#start-selected').onclick = () => action(()=>launchAccounts(loggedAccounts.filter(row=>selectedAccounts.has(accountKey(row))&&row.selectable&&!activeStates.includes(row.state))));
 $('#refresh-accounts').onclick=()=>loadAccounts();
 $('#account-list').onchange=event=>{

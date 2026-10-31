@@ -11,7 +11,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from wxbot_framework.config import ConfigStore
 from wxbot_framework.runtime import BotApplication
@@ -71,10 +71,14 @@ class FakePlugins:
 class FakeApp:
     submit_control = BotApplication.submit_control
     _drain_controls = BotApplication._drain_controls
+    apply_config = BotApplication.apply_config
 
     def __init__(self, root, store):
         self.config = store.load()
         self.plugins = FakePlugins(store)
+        self.members = None
+        self.service = SimpleNamespace(text_delay=None)
+        self.applied = []
         self.stop_event, self.stopped_event = threading.Event(), threading.Event()
         self.controls = queue.Queue(maxsize=64)
         self._connection_ready = False
@@ -167,11 +171,30 @@ class ControllerTests(PanelFixture):
         self.assertEqual(app.plugins.thread_ids, [app.thread_id])
         self.assertNotEqual(app.thread_id, threading.get_ident())
         self.assertEqual(self.controller.chats()[0]['chat_id'], '123@chatroom')
-        with self.assertRaises(PanelError):
-            self.controller.save_configuration({'groups':[]})
+        # 运行中保存配置不再要求先停机器人。
+        self.controller.save_configuration({'groups':['123@chatroom']})
         self.wait_stopped()
         self.assertEqual(self.controller.snapshot()['state'], 'stopped')
         self.controller.start()
+        self.wait_stopped()
+
+    def test_saving_configuration_while_running_applies_without_restart(self):
+        self.controller.start()
+        app = self.controller.app
+        app.members = Mock()
+        response = self.controller.save_configuration({'groups':['123@chatroom'],
+            'owner_ids':{'123@chatroom':['wxid_owner']},
+            'group_names':{'123@chatroom':'测试群'}})
+        self.assertEqual(response, {'ok':True,'restart':[]})
+        # 写盘之后由运行中的机器人自己重读成员配置，不用重启。
+        app.members.reload.assert_called_once_with()
+        self.assertEqual(read_json(self.root/'members_config.json')['owner_ids'],
+                         {'123@chatroom':['wxid_owner']})
+        self.assertIn('123@chatroom', read_json(self.root/'members_config.json')['groups'])
+        self.assertEqual(self.controller.snapshot()['state'], 'running')
+        # 大模型/语音配置要重建客户端才生效，明确告诉面板还差一步。
+        self.assertEqual(self.controller.save_configuration({'llm':{'model':'new-model'}})['restart'],
+                         ['大模型配置'])
         self.wait_stopped()
 
     def test_multi_account_requires_explicit_binding_and_stale_selection_rejected(self):
@@ -444,7 +467,8 @@ class HTTPTests(PanelFixture):
         self.assertEqual(self.request('/api/config')[0],200)
         self.assertNotIn(b'"api_key":',self.request('/api/config')[2])
         self.assertEqual(self.request('/api/start',{})[0],200)
-        self.assertEqual(self.request('/api/config',{'groups':[]})[0],409)
+        # 运行中也能保存配置：写完由机器人自己重读，不用先停。
+        self.assertEqual(self.request('/api/config',{'groups':[]})[0],200)
         self.assertEqual(self.request('/api/stop',{})[0],200)
 
     def test_member_and_send_routes_validate_token_and_preserve_connection(self):

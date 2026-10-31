@@ -155,6 +155,14 @@ class MemberStore:
         self._db = None
         self._closed = False
 
+    def reload(self):
+        """群列表或老板白名单改了就重读一次，机器人运行中也立刻生效。"""
+        fresh = MemberStore(self.config_file, self.account, now=self._now)
+        with self._lock:
+            self.groups, self._owner_ids = fresh.groups, fresh._owner_ids
+            self.profiles = fresh.profiles
+            self.history_enabled, self.daily_clear = fresh.history_enabled, fresh.daily_clear
+
     @classmethod
     def from_config(cls, config, directory):
         filename = config.get("members_config_file")

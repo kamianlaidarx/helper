@@ -50,6 +50,20 @@ class BotApplication:
         self._group_poll_failures = set()
         self._group_roles = {}
 
+    def apply_config(self, config, *, reload_plugins=()):
+        """面板保存配置后热更新：机器人不用停，能生效的部分立刻生效。"""
+        from .pacing import TextSendDelay
+
+        self.config.clear()
+        self.config.update(config)
+        self.service.text_delay = TextSendDelay.from_config(self.config.get("text_send_delay"))
+        # 插件管理器自己留了一份配置拷贝，不刷新的话 enabled/群白名单还是旧的。
+        self.plugins.config = dict(config)
+        if self.members is not None:
+            self.members.reload()
+        for name in reload_plugins:
+            self.plugins.reload(name)
+
     def _log_connection_error(self, error):
         text = f"{type(error).__name__}: {error}"
         now = time.monotonic()
