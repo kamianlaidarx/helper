@@ -567,13 +567,36 @@ class PluginContext:
                 name = member.name
         return Speaker(speaker_id=sender_id, name=name, kind="human", is_owner=is_owner)
 
+    def expression_extras(self, message, speaker):
+        """面具、成长、前世碎片：只影响表达，不影响事实；任何一环坏了就当没有。"""
+        from . import evolution, mask, memory
+        from .personality import fragment_note
+        extras = []
+        try:
+            state = memory.load(message.chat_id)
+            owner = bool(speaker is not None and speaker.is_owner)
+            block = mask.note(state, is_owner=owner)
+            if block:
+                extras.append(block)
+            if owner:
+                fragment = fragment_note(getattr(message, "text", "") or "")
+                if fragment:
+                    extras.append(fragment)
+            grown = evolution.note(state)
+            if grown:
+                extras.append(grown)
+        except Exception:
+            return extras
+        return extras
+
     def llm_for(self, message, *, personality=None, speaker=None):
         from .personality import PersonalityLLM, select_few_shots
         state = personality if personality is not None else self.personality(message)
         few_shots = select_few_shots(state.name, speaker) if speaker is not None else None
         return PersonalityLLM(self.llm, state, current=lambda: self._members is None or
                               self._members.personality_is_current(state),
-                              speaker=speaker, few_shots=few_shots)
+                              speaker=speaker, few_shots=few_shots,
+                              extras=self.expression_extras(message, speaker))
 
     def personality_guard(self, state):
         return self._members.personality_delivery_guard(state) if self._members is not None else nullcontext()

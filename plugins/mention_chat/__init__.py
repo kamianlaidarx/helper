@@ -1,6 +1,8 @@
 """真正艾特机器人后，用本群人格回复当前发言者；刚发过的图片会一起交给视觉模型。"""
+import random
 import time
 
+from wxbot_framework import humanize
 from wxbot_framework.dialogue import Dialogue
 from wxbot_framework.image_intent import wants_image
 from wxbot_framework.images import image_data_url
@@ -25,6 +27,9 @@ class Plugin:
         self.images = {}
         self.latest = {}
         self.pending_images = None
+        # 拟人层要随机和等待；测试里这两个都能换掉，免得跑一次测试等好几秒。
+        self.sleep = time.sleep
+        self.rng = random.Random()
 
     def on_message(self, message, ctx):
         if message.is_self or not message.is_group or message.chat_id not in self.members.groups:
@@ -109,4 +114,20 @@ class Plugin:
             message, personality=personality, speaker=ctx.speaker(message))).reply(
             snapshot, image=self.pending_images), personality.name)
         display = self.members.display_name(message.sender_id, message.chat_id) or snapshot.speaker_name
-        deliver_model_reply(ctx, message, reply, display_name=display, delivery_guard=delivery_guard)
+        bubbles = self.bubbles(reply, snapshot)
+        if not bubbles:
+            ctx.logger.info("拟人层决定这次不回：room=%s", message.chat_id)
+            return
+        for bubble in bubbles:
+            if bubble.delay > 0:
+                self.sleep(bubble.delay)
+            deliver_model_reply(ctx, message, bubble.text, display_name=display,
+                                delivery_guard=delivery_guard)
+
+    def bubbles(self, reply, snapshot):
+        """排成要发的气泡；拟人层出任何问题都退回一口气说完，绝不吞掉回复。"""
+        try:
+            return humanize.plan(reply, is_owner=bool(snapshot.is_owner), is_at_self=True,
+                                 rng=getattr(self, "rng", None))
+        except Exception:
+            return [humanize.Bubble(reply, 0.0)]

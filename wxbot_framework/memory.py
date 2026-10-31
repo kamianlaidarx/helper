@@ -46,11 +46,62 @@ AFFINITY_NOTE_MIN_INTERACTIONS = 3
 EMOTION_STEP = 0.25
 EMOTION_FADE = 0.1
 EMOTION_NOTE_MIN = 0.3
+EMOTION_SMOOTH_NEW = 0.85
+EMOTION_SMOOTH_OLD = 0.15
+ARC_BONUS_STEP = 0.05
+ARC_BONUS_MAX = 0.3
+ARC_MIN_STREAK = 3
+ARC_HISTORY_LIMIT = 10
+ARC_PREVIOUS_LIMIT = 4
+
+# 九类情绪：全部是「她自己的感受」，不是给对方打分。
 EMOTION_KEYWORDS = {
-    "annoyed": ("烦", "滚", "闭嘴", "傻", "笨", "垃圾", "无语", "别说了"),
-    "happy": ("哈哈", "笑死", "厉害", "好棒", "喜欢", "谢谢", "牛", "赞"),
+    "joy": ("哈哈", "笑死", "太好了", "开心", "高兴", "舒服", "爽", "棒", "赞", "牛", "满意", "顺"),
+    "moved": ("谢谢", "感动", "有心", "记得", "辛苦", "靠你了", "麻烦你", "不容易", "挺你"),
+    "missing": ("想你", "想念", "好久不见", "回来", "还记得", "当年", "以前那个", "多久没"),
+    "worry": ("怎么办", "来不及", "崩了", "挂了", "出问题", "严重", "风险", "担心", "紧急", "炸了"),
+    "aggrieved": ("欺负", "不公平", "明明", "凭什么", "加班", "背锅", "被骂", "委屈", "挨批"),
+    "excited": ("太强", "绝了", "稳了", "成了", "终于", "冲", "搞起", "开干", "上线了"),
+    "tsundere": ("才不是", "讨厌", "哼", "随便你", "谁要", "别管我", "懒得", "不用你管"),
+    "focus": ("报错", "日志", "编译", "部署", "测试", "定位", "排查", "栈", "接口", "重构"),
+    "tired": ("困", "睡", "累", "熬夜", "通宵", "好晚", "几点了", "撑不住", "歇"),
 }
-EMOTION_LABELS = {"annoyed": "有点烦", "happy": "心情不错", "neutral": "平静"}
+EMOTION_LABELS = {
+    "joy": "心情不错",
+    "moved": "有点动容",
+    "missing": "想起旧事",
+    "worry": "有点担心",
+    "aggrieved": "有点委屈",
+    "excited": "来劲了",
+    "tsundere": "有点嘴硬",
+    "focus": "很专注",
+    "tired": "有点累",
+    "neutral": "平静",
+}
+
+# 否定词贴着关键词出现时，这个词不算数：「不开心」不是开心。
+NEGATION_WORDS = ("不", "没", "别", "无", "未", "免", "非")
+NEGATION_WINDOW = 3
+# 程度副词压低或抬高同一条关键词的权重。
+INTENSITY_MODIFIERS = (
+    ("非常", 1.6), ("特别", 1.6), ("极其", 1.7), ("极了", 1.5),
+    ("超", 1.5), ("太", 1.5), ("很", 1.3), ("真", 1.2),
+    ("有点", 0.6), ("稍微", 0.6), ("一点点", 0.6), ("一点", 0.7),
+)
+MODIFIER_WINDOW = 4
+
+# 天赋光谱对情绪的放大系数：某个维度越极端，相关情绪越容易被点着。
+SPECTRUM_EMOTION_MAP = {
+    "joy": {"warmth": 0.6, "expressiveness": 0.4},
+    "moved": {"vulnerability": 0.6, "warmth": 0.4},
+    "missing": {"vulnerability": 0.5, "loyalty": 0.5},
+    "worry": {"vulnerability": 0.7, "loyalty": 0.3},
+    "aggrieved": {"vulnerability": 0.6, "independence": 0.2},
+    "excited": {"expressiveness": 0.6, "charm": 0.3},
+    "tsundere": {"independence": 0.5, "charm": 0.3},
+    "focus": {"intelligence": 0.8},
+    "tired": {"vulnerability": 0.4, "intelligence": 0.2},
+}
 
 _TOKEN = re.compile(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]")
 _STOP = frozenset(
@@ -331,17 +382,75 @@ def _affinity_note(state, speaker):
     return ""
 
 
+def _spectrum_boost(name):
+    """天赋光谱把相关情绪放大或压低；导入放进函数里，避免 memory → personality 的循环。"""
+    dims = SPECTRUM_EMOTION_MAP.get(name) or {}
+    if not dims:
+        return 1.0
+    try:
+        from .personality import SPECTRUM
+    except Exception:
+        return 1.0
+    total = 0.0
+    for dim, weight in dims.items():
+        total += weight * (float(SPECTRUM.get(dim, 0.5)) - 0.5)
+    return max(0.5, min(1.8, 1.0 + total))
+
+
+def _negated(body, index):
+    """关键词前面贴着否定词才算否定；「非常」里的「非」是程度副词，不能当否定。"""
+    prefix = body[max(0, index - NEGATION_WINDOW):index]
+    for word in NEGATION_WORDS:
+        start = prefix.find(word)
+        while start >= 0:
+            tail = prefix[start:]
+            if not any(tail.startswith(mod) for mod, _weight in INTENSITY_MODIFIERS
+                       if mod.startswith(word)):
+                return True
+            start = prefix.find(word, start + 1)
+    return False
+
+
+def _modifier(body, index):
+    """看关键词前面几个字有没有程度副词；没有就返回中性 1.0。"""
+    prefix = body[max(0, index - MODIFIER_WINDOW):index]
+    factor = 1.0
+    for word, weight in INTENSITY_MODIFIERS:
+        if word not in prefix:
+            continue
+        factor = max(factor, weight) if weight >= 1.0 else min(factor, weight)
+    return factor
+
+
+def _emotion_score(body, words):
+    """同一类情绪里命中的每个关键词加权累加；被否定的不算数。"""
+    score = 0.0
+    for word in words:
+        start = 0
+        while True:
+            index = body.find(word, start)
+            if index < 0:
+                break
+            start = index + len(word)
+            if _negated(body, index):
+                continue
+            score += _modifier(body, index)
+    return score
+
+
 def update_emotion(state, text):
-    """按群里正在说的话推机器人自己的情绪；纯关键词，不调模型。"""
-    emotion = state.setdefault(
-        "emotion", {"name": "neutral", "intensity": 0.0, "streak": 0, "updated_at": ""}
-    )
+    """按正在说的话推她自己的情绪；关键词 + 光谱加权 + 情感弧线，全程不调模型。"""
+    emotion = state.setdefault("emotion", {})
+    for key, value in (("name", "neutral"), ("intensity", 0.0), ("streak", 0),
+                       ("updated_at", ""), ("history", []), ("arc_history", [])):
+        emotion.setdefault(key, value)
+    body = (text or "").strip()
     hits = {}
-    body = text or ""
-    for name, words in EMOTION_KEYWORDS.items():
-        score = sum(1 for word in words if word in body)
-        if score:
-            hits[name] = score
+    if body:
+        for name, words in EMOTION_KEYWORDS.items():
+            score = _emotion_score(body, words)
+            if score:
+                hits[name] = score * _spectrum_boost(name)
     if not hits:
         emotion["intensity"] = max(0.0, float(emotion.get("intensity") or 0.0) - EMOTION_FADE)
         if emotion["intensity"] <= 0.0:
@@ -350,15 +459,37 @@ def update_emotion(state, text):
             emotion["intensity"] = 0.0
         return emotion
     name = max(hits, key=hits.get)
+    before = float(emotion.get("intensity") or 0.0)
     if name == emotion.get("name"):
-        emotion["streak"] = int(emotion.get("streak") or 0) + 1
-        emotion["intensity"] = min(1.0, float(emotion.get("intensity") or 0.0) + EMOTION_STEP)
+        streak = int(emotion.get("streak") or 0) + 1
+        bonus = min(ARC_BONUS_MAX, (streak - ARC_MIN_STREAK) * ARC_BONUS_STEP) if streak >= ARC_MIN_STREAK else 0.0
+        emotion["streak"] = streak
+        emotion["intensity"] = min(1.0, before + EMOTION_STEP + bonus)
     else:
+        # 情绪切换要平滑：新的占大头，旧的余温留着一点，不能瞬间归零。
         emotion["name"] = name
         emotion["streak"] = 1
-        emotion["intensity"] = EMOTION_STEP
-    emotion["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        emotion["intensity"] = min(1.0, max(EMOTION_STEP,
+                                            before * EMOTION_SMOOTH_OLD + EMOTION_STEP * EMOTION_SMOOTH_NEW))
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    emotion["updated_at"] = now
+    emotion["history"] = (list(emotion.get("history") or []) +
+                          [{"name": name, "intensity": round(float(emotion["intensity"]), 3), "at": now}])[-20:]
+    emotion["arc_history"] = (list(emotion.get("arc_history") or []) + [name])[-ARC_HISTORY_LIMIT:]
     return emotion
+
+
+def _peak_emotion(emotion):
+    """最近这段时间最常出现的情绪；没重复过两次就算没有峰值。"""
+    arc = [item for item in (emotion.get("arc_history") or [])
+           if item in EMOTION_LABELS and item != "neutral"]
+    if not arc:
+        return ""
+    counts = {}
+    for item in arc:
+        counts[item] = counts.get(item, 0) + 1
+    name, count = max(counts.items(), key=lambda pair: pair[1])
+    return name if count >= 2 else ""
 
 
 def emotion_note(state):
@@ -368,11 +499,14 @@ def emotion_note(state):
         return ""
     if float(emotion.get("intensity") or 0.0) < EMOTION_NOTE_MIN:
         return ""
-    label = EMOTION_LABELS[name]
+    line = "- 你现在" + EMOTION_LABELS[name]
     streak = int(emotion.get("streak") or 0)
-    if streak >= 3:
-        label += "（连着第 %d 次了）" % streak
-    return "- 你现在" + label
+    if streak >= ARC_MIN_STREAK:
+        line += "（连着 %d 次了，可以自然表现得更明显一点，但不要自报情绪）" % streak
+    peak = _peak_emotion(emotion)
+    if peak and peak != name:
+        line += "；最近你多半是%s，这会儿不一样" % EMOTION_LABELS[peak]
+    return line
 
 
 def recall(state, query, *, speaker="", limit=RECALL_LIMIT):

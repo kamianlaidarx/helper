@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import test_chat_summary as daily
+from humanize_stub import AlwaysReply
 from plugins.mention_chat import Plugin as ChatPlugin
 from plugins.personality import Plugin as PersonalityPlugin
 from plugins.idiom_chain import Plugin as IdiomPlugin
@@ -19,6 +20,9 @@ from wxbot_framework.sdk import Message
 from wxbot_framework.text import TextRouter
 
 ROOM, CAT, ROBOT, OTHER_ROOM, OTHER = daily.ROOM, daily.CAT, daily.ROBOT, daily.OTHER_ROOM, daily.OTHER
+
+
+
 
 
 class PersonalityTests(unittest.TestCase):
@@ -40,6 +44,9 @@ class PersonalityTests(unittest.TestCase):
         self.ctx._llm = Mock(complete_json=provider or Mock(return_value={"reply": "这是回答。", "summary": "这是总结。"}))
         plugin = ChatPlugin()
         plugin.on_load(self.ctx)
+        # 拟人层默认带随机和打字等待，这里钉死，否则断言会按概率偶发失败。
+        plugin.rng = AlwaysReply()
+        plugin.sleep = lambda seconds: None
         return plugin
 
     def test_personality_persists_and_isolated_from_other_groups_accounts_and_clear(self):

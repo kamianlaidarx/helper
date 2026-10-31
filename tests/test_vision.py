@@ -18,6 +18,8 @@ from tools.probe_vision import payload as probe_payload, probe
 from wxbot_framework.dialogue import Dialogue
 from wxbot_framework.images import image_data_url
 from wxbot_framework.llm import LLMClient, LLMError
+
+from humanize_stub import AlwaysReply
 from wxbot_framework.sdk import Message
 
 
@@ -217,6 +219,9 @@ class MentionChatVisionTests(unittest.TestCase):
         self.addCleanup(timer.stop)
         self.plugin = ChatPlugin()
         self.plugin.on_load(self.ctx)
+        # 拟人层带随机和打字等待：钉死，免得断言按概率偶发失败、也免得真的等。
+        self.plugin.rng = AlwaysReply()
+        self.plugin.sleep = lambda seconds: None
         self.sequence = 1
 
     def image(self, path, **kwargs):

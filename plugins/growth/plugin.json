@@ -1,0 +1,11 @@
+{
+  "api": "v1",
+  "description": "每天自动把长期记忆压成一小块自我提醒（成长层），全自动，不发送任何消息",
+  "requires": [],
+  "business": [
+    {
+      "function": "Plugin.consolidate_now",
+      "label": "立即跑一次日结"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import unittest
 
 import test_chat_summary as daily
+from humanize_stub import AlwaysReply
 from test_tts import wav
 from plugins.voice_reply import Plugin
 from plugins.mention_chat import Plugin as ChatPlugin
@@ -134,6 +135,9 @@ class SpeechTests(unittest.TestCase):
         self.ctx._llm = Mock(complete_json=Mock(return_value={'reply': '继续保持。'}))
         plugin = ChatPlugin()
         plugin.on_load(self.ctx)
+        # 拟人层带随机和打字等待，测试里钉死，否则这条会按概率偶发失败。
+        plugin.rng = AlwaysReply()
+        plugin.sleep = lambda seconds: None
         plugin.on_message(msg, self.ctx)
         self.client.synthesize.assert_called_once_with('继续保持。', FIRST.id)
         self.assertEqual(self.backend.sent[-1], (ROOM, 'voice'))
