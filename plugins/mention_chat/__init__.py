@@ -118,10 +118,12 @@ class Plugin:
         if not bubbles:
             ctx.logger.info("拟人层决定这次不回：room=%s", message.chat_id)
             return
-        for bubble in bubbles:
+        for index, bubble in enumerate(bubbles):
             if bubble.delay > 0:
                 self.sleep(bubble.delay)
-            deliver_model_reply(ctx, message, bubble.text, display_name=display,
+            # 只有第一条艾特人；后面几条像真人接着说，不重复提醒对方。
+            deliver_model_reply(ctx, message, bubble.text,
+                                display_name=display if index == 0 else None,
                                 delivery_guard=delivery_guard)
 
     def bubbles(self, reply, snapshot):
