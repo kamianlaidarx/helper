@@ -3,7 +3,7 @@
 七类破绽与对策都在这里：
 1. 节奏恒定 → typing_delay：按字数给时间，再乘一个对数正态抖动
 2. 有问必答 → should_reply：被艾特也不一定每次都回
-3. 一条说完 → split_bubbles：长回复按句切成一到三条，中间有停顿
+3. 一条说完 → split_bubbles：最多两条，第一条短句节奏，后一条承接剩下全部内容
 4. 排版洁癖 → plain_speech：去掉列表符号和加粗标记
 5. 永不犯错 → maybe_typo：只在熟人群闲聊里，低频打错一个字再自己改口
 6. 永远在线 → should_reply 的深夜抑制
@@ -31,7 +31,8 @@ QUIET_HOURS = (0, 7)
 QUIET_FACTOR = 0.2
 
 BUBBLE_MAX_CHARS = 42
-BUBBLE_LIMIT = 3
+# 只分两条：第一条像随口应一声，剩下的整段接着说完，不再按字数切开。
+BUBBLE_LIMIT = 2
 BUBBLE_GAP_S = 0.8
 # 第一条按真实打字时间等；后面的气泡只做"还在打"的停顿，不能把消息队列堵死。
 BUBBLE_MAX_DELAY_S = 2.5
@@ -97,7 +98,7 @@ def is_workish(text):
 
 
 def split_bubbles(text):
-    """把一段话按句子聚成最多三条气泡；句子太碎时合并，整段太长就整条保留。"""
+    """把一段话按句子聚成最多两条气泡；第二条不按字数切，整段接着说完。"""
     body = (text or "").strip()
     if not body:
         return []
@@ -116,7 +117,7 @@ def split_bubbles(text):
     if current:
         bubbles.append(current)
     if len(bubbles) > BUBBLE_LIMIT:
-        # 超过三条就把后面的并进最后一条，别把一句话讲成一串气泡。
+        # 超过两条就把后面的全并进最后一条，别把一段话讲成一串气泡。
         bubbles = bubbles[:BUBBLE_LIMIT - 1] + ["".join(bubbles[BUBBLE_LIMIT - 1:])]
     return bubbles
 

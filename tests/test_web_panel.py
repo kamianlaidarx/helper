@@ -242,6 +242,15 @@ class ControllerTests(PanelFixture):
         self.assertEqual(read_json(path)['groups']['123@chatroom'], data['groups']['123@chatroom'])
         self.assertEqual(self.controller.store.load()['chat_allowlist'], ['filehelper','123@chatroom','456@chatroom'])
 
+    def test_saving_while_starting_defers_to_restart_instead_of_blocking(self):
+        # 启动那一瞬间主循环还没开始取控制指令，此时投递会一直等到超时。
+        self.controller.start()
+        self.controller.state = 'starting'
+        result = self.controller.save_configuration({'llm': {'model': 'deferred-model'}})
+        self.assertEqual(result['restart'], ['大模型配置'])
+        self.assertEqual(read_json(self.root/'llm_config.json')['model'], 'deferred-model')
+        self.wait_stopped()
+
     def test_group_names_round_trip_without_losing_other_settings(self):
         path = self.root/'members_config.json'
         data = read_json(path)

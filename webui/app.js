@@ -116,13 +116,15 @@ function renderState() {
   $('#discover-chats').disabled=busy||unavailable||!state||!activeStates.includes(state.state);
   renderRobotOptions();renderAccounts();renderMessages();
   const running=!!state&&activeStates.includes(state.state);
-  document.querySelectorAll('form:not(#send-form):not(#plugin-form):not(#moments-form):not(#articles-form):not(#task-form) .primary').forEach(node=>node.disabled=unavailable||!state||running||busy);
+  // 只有正在停止时才锁表单：运行中保存会热更新，需要重启的再弹框问。
+  const stopping=!!state&&state.state==='stopping';
+  document.querySelectorAll('form:not(#send-form):not(#plugin-form):not(#moments-form):not(#articles-form):not(#task-form) .primary').forEach(node=>node.disabled=unavailable||!state||stopping||busy);
   $('#task-save').disabled=unavailable||!state||busy;
   renderSendState();
   renderContacts();
   moments.render();
   articles.render();
-  document.querySelectorAll('.save-hint').forEach(node=>node.textContent=unavailable?'连接中断':!state?'正在读取':running?'停止后可保存':'启动后生效');
+  document.querySelectorAll('.save-hint').forEach(node=>node.textContent=unavailable?'连接中断':!state?'正在读取':stopping?'停止后可保存':running?'可随时保存，需要重启时会问你':'启动后生效');
   if(state)$('#nav-plugin-count').textContent=state.plugins.length;
   renderPlugins();
   renderPluginEditor();
@@ -345,9 +347,25 @@ async function save(data, message) {
   const result = await api('config', data);
   await loadConfig();
   const restart = (result && result.restart) || [];
-  toast(restart.length ? `${message || '配置已保存'}；${restart.join('、')}要重启机器人才生效`
-    : (message || '配置已保存，运行中的机器人会立刻用上新设置'));
+  const saved = message || '配置已保存';
+  // 机器人没跑就不用问重启，文件已经写好了，下次启动自然生效。
+  const live = !!state && (state.state === 'running' || state.state === 'starting');
+  if (!live) { toast(`${saved}，下次启动机器人时生效`); return; }
+  const why = restart.length ? `${restart.join('、')}要重启后才生效` : '其余设置已经热更新';
+  $('#restart-confirm-text').textContent = `${saved}。${why}，现在重启机器人吗？`;
+  openDialog('#restart-confirm');
 }
+$('#restart-cancel').onclick = () => {
+  $('#restart-confirm').close();
+  toast('配置已保存，机器人继续按旧设置运行');
+};
+// 按 ESC 关掉也算稍后重启，别让人以为没保存。
+$('#restart-confirm').addEventListener('cancel', () => toast('配置已保存，机器人继续按旧设置运行'));
+$('#restart-now').onclick = () => action(async () => {
+  $('#restart-confirm').close();
+  await api('restart');
+  toast('机器人正在重启');
+});
 $('#start-selected').onclick = () => action(()=>launchAccounts(loggedAccounts.filter(row=>selectedAccounts.has(accountKey(row))&&row.selectable&&!activeStates.includes(row.state))));
 $('#refresh-accounts').onclick=()=>loadAccounts();
 $('#account-list').onchange=event=>{

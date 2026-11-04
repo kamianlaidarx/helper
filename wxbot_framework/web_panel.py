@@ -467,11 +467,16 @@ class PanelController:
                 changes[paths['members']] = members
             changes[self.store.path] = config
             self._save_many(changes)
+        restart = [label for key, label in
+            (('llm', '大模型配置'), ('tts', '语音配置')) if key in data]
         # 运行中的机器人自己重读一遍：群、老板、白名单、发送节奏立刻生效。
-        if self.worker is not None and self.worker.is_alive():
+        alive = self.worker is not None and self.worker.is_alive()
+        if alive and self.state == 'running':
             self._call(lambda app: app.apply_config(self.store.load()))
-        return {'ok': True, 'restart': [label for key, label in
-            (('llm', '大模型配置'), ('tts', '语音配置')) if key in data]}
+        elif alive:
+            # 启动中还没进主循环，这会儿投递控制指令会一直等到超时，只能靠重启。
+            restart = restart or ['配置']
+        return {'ok': True, 'restart': restart}
 
     def plugin_action(self, data):
         name, action = validate_name(data.get('name')), data.get('action')
