@@ -102,12 +102,33 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
     from .quiz import QuizEngine
     from .ranking import RankingEngine
     from .social import SocialEngine
+    from .lottery import LotteryEngine
+    from .lounge import LoungeEngine
+    from .duel import DuelEngine
+    from .music import MusicEngine
+    from .outbound import OutboundEngine
+    from .groupstat import GroupStatEngine
+    from .moderation import ModerationEngine
 
     return {
         "daily": DailyEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
         "ranking": RankingEngine(now_fn=now_fn),
         # 第 2 批：竞猜/找茬/问答共用这一个引擎（§4 第 10 条）
         "quiz": QuizEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
-        # 第 3 批：社交（本批先落婚姻段）
+        # 第 3 批：社交（婚姻 / 四关系 / 关系卡 / 配对 / 礼物 / 宝宝）
         "social": SocialEngine(now_fn=now_fn),
+        # 第 3 批：盲盒、开宝箱（物品来源）
+        "lottery": LotteryEngine(rng=rng, now_fn=now_fn),
+        # 第 3 批：文案馆 / 群空间 / 群聊
+        "lounge": LoungeEngine(now_fn=now_fn, repo_root=repo_root),
+        # 第 3 批：切磋（不造币，只记战绩）
+        "duel": DuelEngine(rng=rng, now_fn=now_fn),
+        # 第 3 批：点歌队列（音源未接，只报位）
+        "music": MusicEngine(now_fn=now_fn),
+        # 第 3 批：出站能力，天气走 adapters.outbound 的 provider（默认离线）
+        "outbound": OutboundEngine(now_fn=now_fn),
+        # 第 4 批：潜水 / 邀请 / 改名巡检（只统计，不清人）
+        "groupstat": GroupStatEngine(now_fn=now_fn),
+        # 第 4 批：小黑屋 / 黑名单（只在本插件内生效）
+        "moderation": ModerationEngine(now_fn=now_fn),
     }

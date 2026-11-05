@@ -111,8 +111,9 @@ class MenuTests(unittest.TestCase):
                     self.assertIn(trigger.action, menus.MENUS)
 
     def test_pending_flag(self):
-        # 礼物 / 配对 / 关系卡 / 宝宝 第 3 批已上线，只剩批内其他玩法还挂着施工中
-        self.assertTrue(menus.is_pending("music.request"))
+        # 第 4 批把最后六个动作的卡换成真说明，`is_pending` 现在全为 False
+        self.assertFalse(menus.is_pending("groupstat.dive"))
+        self.assertFalse(menus.is_pending("ranking.activity"))
         self.assertFalse(menus.is_pending("social.marry"))
         self.assertFalse(menus.is_pending("social.gift"))
         self.assertIsNone(menus.menu_for("no.such.action"))

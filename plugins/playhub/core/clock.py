@@ -39,6 +39,26 @@ def week_of(ts: float | None = None) -> str:
     return f"{year}-W{week:02d}"
 
 
+def range_of(period: str, ts: float | None = None) -> tuple[str | None, str | None]:
+    """把榜期换成 `activity_daily.day` 的**闭区间** `(since, until)`（§3.4）。
+
+    - `day` → 今天今天；`week` → 本周一 → 今天（周一为周起点）；
+    - `month` → 本月 1 日 → 今天；`all` → `(None, None)`。
+    上界取「今天」而不是「本周日 / 本月末」：未来的天没有数据，结果一样，
+    而且能少扫一批空区间。跨月/跨年/2 月闰年都由 `date` 自己算，不手写加减。
+    """
+    if period == "all":
+        return (None, None)
+    today = _local(now_ts() if ts is None else ts).date()
+    if period == "day":
+        return (today.isoformat(), today.isoformat())
+    if period == "week":
+        return ((today - timedelta(days=today.weekday())).isoformat(), today.isoformat())
+    if period == "month":
+        return (today.replace(day=1).isoformat(), today.isoformat())
+    raise ValueError(f"未知榜期：{period!r}")
+
+
 def fmt_left(seconds: float) -> str:
     """把剩余秒数格式化成中文可读串，如 `"3小时12分"`。
 

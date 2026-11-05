@@ -1385,6 +1385,22 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 配对（第 3 批落地口径） | 不花金币、不落库：`score = int(sha256("room|day|low|high")[:8], 16) % 101`，同一天同一对恒定，跨天重摇；两人顺序无关（先按 uid 排序）。分档 90/75/60/40/20/0 各一句评语 |
 | 宝宝（第 3 批 v1） | 领养：**无独立子命令**，第一次 `宝宝 看` / `宝宝 喂养` 自动领一只（有婚姻则 `parent_low/parent_high` 都记，否则只记 `parent_low`），默认名 `{昵称}的宝宝`，重名追加 2/3/…。喂养：**20 金币/次，每日 3 次**（`daily_counter` 键 `baby_feed`），`care +10`（上限 100）、`exp +5`；阶段阈值 `exp ≥ 100/300/600/1000` 依次进 婴儿/幼儿/儿童/少年，**第 5 阶「超极」v2 才开放**（`宝宝 超极` 只回说明，不升级也不扣费）。改名：≤8 字、群内重名拒绝，`audit` 记 `from/to` |
 | 关系卡（第 3 批落地口径） | 只读，不花钱。省略参数看自己，带 `@` 看别人；每类关系最多列 3 人，超出写「等 N 人」；只有一行「未婚」时尾注「这张卡几乎是空的」 |
+| 盲盒（第 3 批落地口径） | 每日免费 **1** 次（`daily_counter` 键 `blindbox_free`），另有 `买次数` 5 钻/次、每日上限 2 次（`blindbox_buy`）；**加购额度必须真的买过才能用**——购买数与已用数分开计，否则「免费 0 / 加购 2」会凭空多两次。掉落 `玫瑰 40 / 巧克力 25 / 蛋糕 18 / 烟花 12 / 戒指 5`（权重合 100，期望 ≈82 金币 < 戒指 520，防止买次数被当成金币洗出通道），单次最多连开 10 个 |
+| 开宝箱（第 3 批落地口径） | **开启免费**，不看钥匙；币值 铜 50 / 银 150 / 金 400，钻石 1/20 +1、1/12 +1、1/8 +2。供给：每日签到送铜箱、连签第 7 天那一次额外送金箱；**银箱等第 4 批活跃榜周榜前 10 的定时动作**，在那之前不会凭空发 |
+| 求财神（第 3 批落地口径） | **固定 +20 金币**，一日一次（`daily_counter` 键 `wealth`），签文从 `content/playhub/wealth.jsonl` 轮转——「金币产出全部为固定值，无随机金币」这条不变 |
+| 黄历 / 星座（第 3 批落地口径） | 全部本地化、不请求第三方。黄历支持 `黄历 明天` / `黄历 昨天`，内容按**日期**轮转（同一天全群同一份），文档写明「不接真实历法」；星座不给星座时用 `sha256(day, room, uid) % 12` 推定并在卡面上说明，四项指数与幸运数字/颜色同理由 `(种子, 维度)` 哈希得出，**同一天同一人不重摇** |
+| 切磋（第 3 批落地口径） | 不押金币、不发金币，只记战绩（`kv` 的 `duel:wins:<uid>` / `duel:losses:<uid>`）；`同意` 后 `rng.random() < 0.5` 定胜负；挑战 10 分钟内有效，同一个人同时只能有一场未完的挑战 |
+| 点歌（第 3 批落地口径） | 只登记队列（`kv` 的 `music:queue`，上限 **5** 首）并报排位，**不发音频**；每人 30 秒冷却（`music:cd:<uid>`）；队列在内存级的 `kv` 里，机器人重启即清空 |
+| 文案（第 3 批落地口径） | 主题 日常/情话/挽尊/打气/傲娇/沙雕，游标按主题分别存 `kv`（`copy:cursor:<主题>`）；**游标先自增再取模**，所以每组第一次拿到的是第 2 条，随后顺序轮完再回到第 1 条——语义是「再发一次换下一条」，不是「从第一条开始」 |
+| 群空间（第 3 批落地口径） | 只读聚合（成员档案/在册关系/宝宝/群内金币与钻石总量/背包件数），缓存键按**整点**（`space:<YYYY-MM-DDTHH>`），每小时最多重算一次；写缓存用独立事务，不在只读事务里升级 |
+| 天气（第 3 批落地口径） | `adapters/outbound.WeatherProvider` 协议 + 默认 `OfflineProvider`（恒返回 `None`）：**没接服务就明说接不上，不编预报**；城市必填且 ≤12 字，缓存 10 分钟，失败不写缓存 |
+| 活跃榜（第 4 批落地口径） | 默认**本周**（`DEFAULT_PERIOD="week"`），参数词 `日/今日/今天`、`周/本周/这周`、`月/本月/这个月`、`总/总榜/全部`；区间由 `clock.range_of()` 算，**上界一律取「今天」**而不是周末/月末（未来没有数据，少扫空区间）；周的起点是 `today - timedelta(days=today.weekday())`（周一）；单位是「条」= `activity_daily.messages` 求和，同一句只记一次（命令消息不记） |
+| 潜水（第 4 批落地口径） | 天数默认 7、上限 90；判据是 `activity_daily.last_at` 距今天数 ≥ 天数；读的是 `member_seen` 的昵称快照；**只统计、不清人**（框架无踢人能力，`:1743` 的软禁言同理） |
+| 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）；事件没带邀请人时按人榜为空、只报群级，并在卡面上直说「框架的入群事件没带邀请人」 |
+| 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**只在配置里开**，默认关；`现在` 走 `ctx.group_members(room)` 快照与 `member_seen` 比对，快照返回 `None`（缓存未就绪）时明说「读不到群成员快照」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
+| 小黑屋（第 4 批落地口径） | 软禁言：被关期间**在 `route()` 之前**就返回静默（连「黑名单 列」也不回，§8.2）；单次上限 **60 分钟**、每日上限 **10 次**（`daily_counter` 键 `jail_set`）；`jail.until` 到期由任意 `小黑屋` 子命令惰性清理（定时巡检属第 4 批剩余项）；`小黑屋 10` 这种缺目标形态直接拒绝（`target.isdigit() and not extra`）；列表卡标题带人数 |
+| 黑名单（第 4 批落地口径） | `scope='play'`，只在本插件内生效；被拉黑者与小黑屋同等待遇（`route()` 之前静默）；`加/删/列` 里 `列` 不需权限，`加/删` 需 owner/admin；`加` 用 `ON CONFLICT(room,uid,scope) DO UPDATE` 幂等，`删` 只删 `scope='play'` |
+| 门禁的两种失败方向（第 4 批落地口径） | **权限判定失败关闭**（`MemberFeed.role` 返回 `unknown` / 抛异常 → `permissions.gate` 拒绝，记 `audit.result='denied'`）；**静默判定失败开放**（`_muted()` 读库异常按「不在小黑屋/黑名单」，否则库一抖全群静音）。两者方向相反是有意的，写测试时不要统一 |
 
 **金币 sink 汇总**：度蜜月 520、离婚 200、礼物 20–520（按件计）、宝宝喂养 20/次（日 3 次，日上限 60）。盲盒次数是钻石 sink，不消耗金币。
 
@@ -1428,7 +1444,10 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 比没有卡更糟。
 
 **落地进度（2026-11-05）**：`render.py` / `menus.py` / app 接线 / 签到 / 抽签 / 帮助总览 /
-13 类竞猜题目卡与结果卡 / 金币榜 / 婚姻与四种关系的全部结果卡 已完成——`social.py` 的 53 处回复
+13 类竞猜题目卡与结果卡 / 金币榜 / 婚姻与四种关系 / 关系卡 / 配对 / 礼物 / 宝宝 /
+盲盒 / 开宝箱 / 黄历 / 星座 / 求财神 / 文案 / 群空间 / 聊天说明 / 切磋 / 点歌 / 天气 的结果卡 已完成，
+第 4 批的活跃榜 / 潜水 / 邀请 / 改名 / 小黑屋 / 黑名单 六张卡也已在 2026-11-05 落地
+（**43 张触发卡全部可用，不再有 `⏳ 施工中`**）——`social.py` 的 53 处回复
 统一走 `_ok()`（`@人 → 主行 → ├ 明细 → 当前`）与 `_no()`（`❌ 一句原因 + 💡 下一步`），
 失败回复不再只说「不行」，一定带下一步该发什么。
 
@@ -1658,7 +1677,17 @@ def resolve_workspace(ctx, msg) -> Path:
   - `social.gift`（礼物）：`礼物 @对象 物品` → 背包有就扣背包，没有就按价目 `debit` 代买（流水键 `gift:<from>:<to>:<item>:<ts>`，捕获 `Insufficient`/`DuplicatePosting`）；成功写 `audit(action="cmd:礼物")` 与 `kv` 的 `gifts:<low>:<high>` 计数。**礼物不进对方背包**（v1 没有消费礼物的玩法）。
   - `baby.view`（宝宝 v1）：`看 / 喂养 / 改名 X / 超极`；没有独立「出生」子命令，第一次 `看` 或 `喂养` 自动领养；喂养 20 金币、日 3 次（`daily_counter` 键 `baby_feed`）、`care +10`、`exp +5`；流水键带上「当日第几次」（`baby_feed:<uid>:<day>:<used>`），否则同一秒连喂会被 `wallet_ledger` 的唯一键判成重复流水（实际踩到过）。
   - 数值表补在 §4.4（礼物五档价、喂养成本与阶段阈值、配对不花钱）。
-- **尚未落地**：本批其余引擎（`lottery`/`duel`/`music`/`lounge`/`adapters`）。
+- **第二批（抽奖 / 娱乐 / 外部服务）已落盘，`BINDINGS` 26 → 37**：
+  - `plugins/playhub/engines/lottery.py`：`盲盒`（每日免费 1 次、`买次数` 5 钻限 2 次、连开最多 10、掉落表在 `core/items.BLIND_BOX_LOOT`）与 `开宝箱`（铜/银/金，币值 50/150/400，钻石按 1/20·1/12·1/8 判定，写 `lottery_draw` 台账）。**踩坑**：最初把「未购买的加购额度」当成可用次数，导致裸发第二次仍能抽、`盲盒 8` 抽了 3 次；修法是把「买到的次数」与「已用掉的加购次数」拆成两个计数器。
+  - `plugins/playhub/engines/lounge.py`：`文案`（主题轮转 + `kv` 游标，带 `@昵称` 回包）、`群空间`（整点缓存 1 小时的只读聚合）、`聊天`（只回说明卡，**不假装会聊**）。**踩坑**：`space()` 曾在只读事务里再开写事务，报 `cannot start a transaction within a transaction`；改成出事务后单独写缓存。
+  - `plugins/playhub/engines/duel.py`：`切磋 @对象` → `同意`/`拒绝`，10 分钟过期，胜率 50%，只记战绩不碰钱包（文档明确「不联动监狱/医院」）。
+  - `plugins/playhub/engines/music.py`：`点歌` 只登记队列（上限 5）与排位，每人 30 秒冷却，**不发音频**（音源 §9 未定）。
+  - `plugins/playhub/engines/outbound.py` + `adapters/outbound.py`：`WeatherProvider` 协议 + 离线默认实现，`天气 城市` 在没接服务时明说「接不上」，不编数据。
+  - `plugins/playhub/engines/daily.py`：`黄历`（`明天`/`昨天` 偏移、按日轮转）、`星座`（不给星座按哈希推定、四项指数 + 幸运数字/颜色）、`求财神`（固定 +20 金币、一日一次），文案库 `content/playhub/{almanac,horoscope,wealth}.jsonl` 各 24 条。
+  - 签到现在发箱：每日铜箱 1 个、连签第 7 天额外金箱 1 个（`items.add` 写 `inventory`）。
+  - 测试：新增 `tests/test_playhub_lottery.py`（20 例）、`tests/test_playhub_batch3.py`（23 例，覆盖文案轮转/群空间缓存与汇总/聊天说明/切磋四条路径/点歌冷却与队列上限/天气未接入）；playhub 全套 **307 passed / 551 subtests**，`main.py --check` 通过。
+  - `plugins/playhub/core/kv.py`：房间级 JSON 键值工具（`get/get_json/put/set_json/bump/clear`），把引擎里的重复 SQL 收成一处。
+- **仍未落地**：第 4 批的 6 个动作（`ranking.activity`、`moderation.jail`、`moderation.block`、`groupstat.dive`、`groupstat.invite`、`groupstat.rename`）与全部定时动作。
 
 验收标准：
 
@@ -1685,6 +1714,15 @@ def resolve_workspace(ctx, msg) -> Path:
 5. 7 个定时动作在控制台「定时任务」页可建、可停、可删（`wxbot_framework/scheduled_tasks.py:26-47`），触发后按预期发消息；群推送类动作只绑 `plan_id/revision`，执行前重读已批准计划并重查批准者角色——计划缺失/停用/revision 过期/批准者已降权时**不发并记拒绝审计**，改面板原始参数不能扩大计划范围。
 6. `宝宝 改名 X` 不被门禁误拦（它是玩家玩法，不是群管理开关）。
 7. 全量回归：47 项逐条冒烟（脚本化，按 `keywords.py` 的 61 个词遍历），无异常堆栈、无队列堆积；同一脚本再跑一遍"误触语料"（50 条常见闲聊），断言零回复；§4 总表项数、触发词账、帮助文案三处数量断言一致。
+
+**落地进度（2026-11-05，前半批已完成）**
+
+- 已落盘：`core/activity.py`（`record` 双 UPSERT `activity_daily` + `member_seen`、`scores`、`last_seen`、`seen_names`、`record_nickname_change`、`recent_names`）、`core/clock.range_of()`、`engines/groupstat.py`（`潜水`/`邀请`/`改名`）、`engines/moderation.py`（`小黑屋`/`黑名单`，导出 `is_jailed`/`is_blocked`）、`engines/ranking.py` 的 `activity` 榜（`top()` 支持 `period`，`format_board()` 泛化、新增 `format_activity()`）。
+- 接线：`registry.CURRENT_BATCH = 4`，`BINDINGS` **37 → 43**（本批 6 个动作全部绑定，`ACTION_PLAN` 里不再有 `None`）；`build_engines` 加 `groupstat`/`moderation`；`app.handle_message` 在 `route()` **之前**判小黑屋/黑名单静默，纯文本分支记 `activity.record`（命令消息不记、自己不记）。
+- 验收对应：第 1、2、3、4、6 条已由 `tests/test_playhub_batch4.py`（56 例）覆盖；第 5 条（定时任务页可建可停）与第 7 条（47 项脚本化冒烟）未做。
+- 全量：playhub **363 passed / 557 subtests**，`main.py --check` 通过。
+- 第 4 批剩余（都是定时侧）：`scheduled_pay_salary`、`daily_quiz`、`quiz_gc`、离婚超时退款、`daily_report`、`nickname_watch`、活跃榜周榜发银箱——设计里这 7 个动作要绑 `plan_id/revision` 并在执行前重查批准者角色，工作量集中在这里。
+- 三条踩坑（已写进代码注释）：①`ctx.group_members()` 缓存未就绪返回 `None`，**不能** `raw or ()` 当空列表，否则「读不到快照」会被误报成「没人改名」；②`小黑屋 10` 的目标位会解析成数字，必须先判「纯数字且无后续」再回「要点人」；③`render.result()` 的 headline 与 `render.head()` 都写标题会重复一行，列表卡只用 headline 带人数。
 
 ### 人日汇总
 

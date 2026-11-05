@@ -222,7 +222,7 @@ class RankingTopTest(StoreCase):
 
     def test_unimplemented_boards_raise(self):
         with self.store.tx(immediate=False) as conn:
-            for board in ("activity", "marriage", "invite"):
+            for board in ("marriage", "invite"):
                 with self.subTest(board=board):
                     with self.assertRaises(NotImplementedError):
                         top(conn, board=board, room=ROOM, period="all", now=NOW)
@@ -278,7 +278,7 @@ class RankingCommandTest(StoreCase):
 
     def test_unavailable_boards_are_silent(self):
         self.seed_player("wxid_a", "小明", 300)
-        for text in ("排行榜 活跃", "排行榜 婚姻", "排行榜 邀请"):
+        for text in ("排行榜 婚姻", "排行榜 邀请"):
             with self.subTest(text=text):
                 self.assertIsNone(self.app.handle_message(None, FakeMsg(text)))
         self.assertEqual(self.log.records, [])            # 静默 = 零日志噪音
@@ -303,11 +303,13 @@ class AppSilentPathTest(StoreCase):
                 self.assertQuiet(text)
 
     def test_unbound_action(self):
-        # 点歌/点唱 是 needs_arg+guide，但 music.request 不在当前批次 BINDINGS 里。
-        # 第 2 批已绑 13 个 quiz 动作，`猜成语` 不再是"未绑定"的例子。
-        for text in ("点歌", "点歌 晴天", "点唱", "天气 北京"):
+        # 第 4 批之后 43 个动作全部绑定，「未绑定 → 静默」改为验证「引擎没接线 → 静默」：
+        # 注入空引擎表，等价于这些动作在真实部署里还没有实现。
+        app = App(store=self.store, engines={}, logger=self.log)
+        for text in ("活跃榜", "小黑屋 @某人", "潜水", "邀请", "黑名单 列"):
             with self.subTest(text=text):
-                self.assertQuiet(text)
+                self.assertIsNone(app.handle_message(None, FakeMsg(text)), text)
+        self.assertEqual(self.log.records, [])
 
     def test_silent_bare_trigger(self):
         # 礼物的裸发走触发卡（第 3 批上线后），静默只剩五个受开关管的动作
@@ -324,7 +326,7 @@ class AppSilentPathTest(StoreCase):
         self.assertEqual(self.counters(), [])
 
     def test_silent_paths_write_nothing(self):
-        for text in ("你好", "点歌 晴天", "礼物", "排行榜 活跃"):
+        for text in ("你好", "小黑屋 @某人", "礼物", "排行榜 活跃"):
             self.app.handle_message(None, FakeMsg(text))
         self.assertEqual(self.ledger(), [])
         self.assertEqual(self.counters(), [])

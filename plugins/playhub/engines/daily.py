@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -23,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..core import clock, credit, ensure_player, render
+from ..core import balance, clock, credit, ensure_player, items, render
 from ..core.errors import DuplicatePosting
 from . import Reply, msg_nickname, msg_room, msg_uid, store_of
 
@@ -253,6 +254,104 @@ def load_fortune_bank(path: Path) -> tuple[tuple[str, str], ...] | None:
 # ---------------------------------------------------------------------------
 # 引擎
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 黄历 / 星座 / 求财神（第 3 批，`docs/design/playhub.md:1178-1184`）
+#
+# 三条都是**纯本地、日确定性**：同一群同一天同一人结果不变，跨天自动换。
+# 黄历/星座/财神签文都放在 `content/playhub/<bank>.jsonl`，运维可自行替换；
+# 文件缺失时回「未就绪」，不现编内容（§5.2 只允许「不回答」，不允许瞎编）。
+# ---------------------------------------------------------------------------
+ALMANAC_BANK = "almanac.jsonl"
+HOROSCOPE_BANK = "horoscope.jsonl"
+WEALTH_BANK = "wealth.jsonl"
+
+#: 求财神固定 +20 金币（§4.4 明写「金币产出全部为固定值，无随机金币」）。
+WEALTH_COIN = 20
+WEALTH_KEY = "wealth"
+WEALTH_CAP = 1
+WEALTH_REASON = "wealth"
+WEALTH_ALREADY = "今天已经求过财神了，明天再来吧"
+WEALTH_NOT_READY = "财神签文库未就绪"
+
+WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+#: 12 星座（名字里带「座」也能认）
+SIGNS = (
+    "白羊", "金牛", "双子", "巨蟹", "狮子", "处女",
+    "天秤", "天蝎", "射手", "摩羯", "水瓶", "双鱼",
+)
+
+LUCKY_COLORS = (
+    "墨绿", "藏青", "暖橙", "米白", "酒红", "雾灰",
+    "浅金", "湖蓝", "薰衣草紫", "青竹绿", "砂棕", "奶咖",
+)
+
+#: `(mtime, size, rows)`，避免每条消息都重读小文件；文件改了立刻失效。
+_BANK_CACHE: dict[Path, tuple[float, int, tuple[dict, ...]]] = {}
+
+
+def content_paths(store, bank: str, *, repo_root: Path | None = None) -> tuple[Path, Path, ...]:
+    """与 `fortune_bank_paths` 同一套覆盖规则：账号工作区优先，仓库层兜底。"""
+    local = Path(store.db_path).parent / "content" / bank
+    root = Path(repo_root) if repo_root is not None else _REPO_ROOT
+    return (local, root / "content" / "playhub" / bank)
+
+
+def load_jsonl_bank(path: Path) -> tuple[dict, ...] | None:
+    """读一个 `{...}` 每行的 JSONL，按 `(mtime, size)` 缓存；读不动返回 None。"""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    cached = _BANK_CACHE.get(path)
+    if cached is not None and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return cached[2]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    rows: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue          # 手改坏行只跳过，不整类拒载
+        if isinstance(row, dict):
+            rows.append(row)
+    result = tuple(rows)
+    _BANK_CACHE[path] = (stat.st_mtime, stat.st_size, result)
+    return result
+
+
+def bank_for(store, bank: str, *, repo_root: Path | None = None) -> tuple[dict, ...] | None:
+    for path in content_paths(store, bank, repo_root=repo_root):
+        rows = load_jsonl_bank(path)
+        if rows:
+            return rows
+    return None
+
+
+def _hash_int(*parts: str) -> int:
+    raw = "|".join(parts).encode("utf-8")
+    return int(hashlib.sha256(raw).hexdigest()[:8], 16)
+
+
+def _stars(value: int, low: int = 2, high: int = 5) -> str:
+    n = low + value % (high - low + 1)
+    return "★" * n + "☆" * (5 - n)
+
+
+def _sign_of(text: str) -> str | None:
+    """从参数里认星座名，`狮子`/`狮子座`/`我是狮子座` 都算。"""
+    for sign in SIGNS:
+        if sign in text:
+            return sign
+    return None
+
+
 class DailyEngine:
     """`daily` 引擎：签到 + 抽签。
 
@@ -275,6 +374,12 @@ class DailyEngine:
             return self.signin(msg, ctx, game)
         if action == "daily.fortune":
             return self.fortune(msg, ctx, game)
+        if action == "daily.almanac":
+            return self.almanac(cmd, msg, ctx, game)
+        if action == "daily.horoscope":
+            return self.horoscope(cmd, msg, ctx, game)
+        if action == "daily.wealth":
+            return self.wealth(msg, ctx, game)
         return None
 
     # -- 签到 ---------------------------------------------------------------
@@ -290,6 +395,7 @@ class DailyEngine:
 
         already = False
         streak = coin = diamond = coin_after = 0
+        chests: tuple[str, ...] = ()
         try:
             with store.tx() as conn:      # BEGIN IMMEDIATE → 校验 → 发币 → 流水 → COMMIT
                 if _counter_used(conn, room=room, uid=uid, day=day, key=SIGNIN_KEY, cap=SIGNIN_CAP) >= SIGNIN_CAP:
@@ -315,8 +421,8 @@ class DailyEngine:
                     )
                     coin_after = entry.balance
                     if diamond:
-                        # 跨批边界：金箱（core/items.py）属第 3 批，本批只发钻石；
-                        # 已签过的日子按 §7「不追溯补发」，第 3 批不会回头再补金箱。
+                        # §4.4「钻石总账」：连签第 7 天 +3 钻；金箱也在这天发，但箱子
+                        # 只是「抽奖容器」，开启后的金币/钻石记在 `open_chest` 里。
                         credit(
                             conn,
                             room=room,
@@ -328,6 +434,12 @@ class DailyEngine:
                             posting_no=1,
                             now=now,
                         )
+                    # §4.4「宝箱三型」取得方式：铜箱每日签到赠 1；金箱连签第 7 天赠 1。
+                    # 银箱来自活跃榜周榜前 10（`ranking` 的定时动作属第 4 批），这里不发。
+                    chests = [items.CHEST_BRONZE] + ([items.CHEST_GOLD] if diamond else [])
+                    items.seed(conn)
+                    for chest_id in chests:
+                        items.add(conn, room, uid, chest_id)
                     _write_streak(conn, room, uid, day, streak, now)
         except DuplicatePosting:
             # 同一 operation_key 已有流水：并发/重放，按「今天签过了」处理，不重复发币。
@@ -336,7 +448,7 @@ class DailyEngine:
 
         if already:                      # Reply 一律在 COMMIT 之后构造，事务内不发送
             return Reply(SIGNIN_ALREADY, "daily.signin")
-        return Reply(_signin_text(nickname, streak, coin, diamond, coin_after), "daily.signin")
+        return Reply(_signin_text(nickname, streak, coin, diamond, coin_after, chests), "daily.signin")
 
     # -- 抽签 ---------------------------------------------------------------
     def draw_tier(self) -> FortuneTier:
@@ -409,6 +521,133 @@ class DailyEngine:
         return Reply(_fortune_text(nickname, tier, text, coin_after), "daily.fortune")
 
     # -- 内部 ---------------------------------------------------------------
+    # -- 黄历 ---------------------------------------------------------------
+    def almanac(self, cmd, msg=None, ctx=None, game=None) -> Reply | None:
+        room, uid = msg_room(msg), msg_uid(msg)
+        store = store_of(game)
+        if store is None:
+            return None
+        now = self._now()
+        args = getattr(cmd, "args", "") or ""
+        offset = 1 if "明天" in args else (-1 if "昨天" in args else 0)
+        try:
+            day = date.fromisoformat(clock.day_of(now)) + timedelta(days=offset)
+        except ValueError:
+            return None
+        rows = bank_for(store, ALMANAC_BANK, repo_root=self._repo_root)
+        if not rows:
+            return Reply("📅 黄历还没准备好：缺 content/playhub/almanac.jsonl", "daily.almanac")
+        row = rows[_hash_int(str(day)) % len(rows)]
+
+        def _join(key: str) -> str:
+            value = row.get(key)
+            if isinstance(value, list):
+                return "、".join(str(x) for x in value) or "—"
+            return str(value) if value else "—"
+
+        when = f"{day:%Y-%m-%d} {WEEKDAYS[day.weekday()]}"
+        if offset:
+            when += " · 明天" if offset > 0 else " · 昨天"
+        body = [
+            render.field("🗓", "干支", f"{row.get('gz') or '—'}日"),
+            render.field("🌿", "五行", _join("wx")),
+            render.field("🐎", "冲煞", _join("chong")),
+            render.field("✨", "吉神", _join("god")),
+            render.field("✅", "宜", _join("yi")),
+            render.field("⛔", "忌", _join("ji")),
+        ]
+        return Reply(
+            render.menu(
+                "📅", f"黄历 {when}", body,
+                note_text="内容出自本地文案库（content/playhub/almanac.jsonl），按日轮转，不接真实历法",
+            ),
+            "daily.almanac",
+        )
+
+    # -- 星座 ---------------------------------------------------------------
+    def horoscope(self, cmd, msg=None, ctx=None, game=None) -> Reply | None:
+        room, uid = msg_room(msg), msg_uid(msg)
+        store = store_of(game)
+        if store is None:
+            return None
+        day = clock.day_of(self._now())
+        args = getattr(cmd, "args", "") or ""
+        sign = _sign_of(args)
+        derived = sign is None
+        if derived:
+            # 不给星座就按「这天 + 这群 + 你」定一个：同一天反复发结果一致，
+            # 免得同一个人一会儿白羊一会儿天蝎。
+            sign = SIGNS[_hash_int(day, room or "", uid or "") % len(SIGNS)]
+        seed = f"{day}|{sign}"
+        rows = [
+            render.field("💗", "爱情", _stars(_hash_int(seed, "love"))),
+            render.field("💼", "工作", _stars(_hash_int(seed, "work"))),
+            render.field("💰", "财运", _stars(_hash_int(seed, "money"))),
+            render.field("🍀", "健康", _stars(_hash_int(seed, "health"))),
+            render.field("🔢", "幸运数字", str(_hash_int(seed, "num") % 9 + 1)),
+            render.field("🎨", "幸运颜色", LUCKY_COLORS[_hash_int(seed, "color") % len(LUCKY_COLORS)]),
+        ]
+        bank = bank_for(store, HOROSCOPE_BANK, repo_root=self._repo_root)
+        if bank:
+            text = str(bank[_hash_int(seed, "text") % len(bank)].get("text") or "").strip()
+            if text:
+                rows.append(render.quote("📜", text))
+        note_text = (
+            "没给星座就按你名字算了一个；想指定发「星座 狮子」"
+            if derived
+            else "同一星座同一天结果不变，跨天自动换"
+        )
+        return Reply(render.menu("🔮", f"今日运势 · {sign}座", rows, note_text=note_text), "daily.horoscope")
+
+    # -- 求财神 -------------------------------------------------------------
+    def wealth(self, msg, ctx=None, game=None) -> Reply | None:
+        room, uid = msg_room(msg), msg_uid(msg)
+        if not room or not uid:
+            return None
+        store = store_of(game)
+        now = self._now()
+        day = clock.day_of(now)
+        nickname = msg_nickname(msg, ctx)
+        already = False
+        coin_after = 0
+        row: dict = {}
+        try:
+            with store.tx() as conn:
+                if _counter_used(conn, room=room, uid=uid, day=day, key=WEALTH_KEY, cap=WEALTH_CAP) >= WEALTH_CAP:
+                    already = True
+                else:
+                    bank = bank_for(store, WEALTH_BANK, repo_root=self._repo_root)
+                    if not bank:
+                        return Reply(f"🧧 {WEALTH_NOT_READY}", "daily.wealth")
+                    row = bank[_hash_int(day, uid) % len(bank)]
+                    ensure_player(conn, room=room, uid=uid, nickname=nickname or None, now=now)
+                    _counter_consume(conn, room=room, uid=uid, day=day, key=WEALTH_KEY, cap=WEALTH_CAP, now=now)
+                    credit(
+                        conn, room=room, uid=uid, currency="coin", amount=WEALTH_COIN,
+                        reason=WEALTH_REASON, operation_key=f"wealth:{day}:{uid}",
+                        posting_no=0, now=now,
+                    )
+                    coin_after = balance(conn, room=room, uid=uid, currency="coin")
+        except DuplicatePosting:
+            return Reply("这个玩法暂时出错了", "daily.wealth")
+
+        if already:
+            return Reply(
+                render.result(nickname, f"🧧 {WEALTH_ALREADY}", (), tail="⏳ 每天 0 点刷新"),
+                "daily.wealth",
+            )
+        body = [
+            render.field("💰", "金币", f"+{WEALTH_COIN}"),
+            render.current("💰", "金币", coin_after),
+        ]
+        text = str(row.get("text") or "").strip()
+        if text:
+            body.append(render.quote("📜", text))
+        return Reply(
+            render.result(nickname, "🧧 财神到", body, tail="💡 一天只问一次，问的是今天这口气"),
+            "daily.wealth",
+        )
+
     def _bank(self, store) -> tuple[tuple[str, str], ...] | None:
         """按 §5.2 取签文库：① 存在即**完全覆盖** ②（不做跨层合并）。"""
         for path in fortune_bank_paths(store, repo_root=self._repo_root):
@@ -431,7 +670,14 @@ def _pick_text(bank: tuple[tuple[str, str], ...], tier: str) -> str | None:
     return None
 
 
-def _signin_text(nickname: str, streak: int, coin: int, diamond: int, coin_after: int) -> str:
+def _signin_text(
+    nickname: str,
+    streak: int,
+    coin: int,
+    diamond: int,
+    coin_after: int,
+    chests: tuple[str, ...] = (),
+) -> str:
     """签到结果卡（小V 格式：点人 → 明细 → 当前余额 → 一句彩蛋，见 `core/render.py`）。"""
     rows = [
         render.row("├ ", f"连签：{streak} 天"),
@@ -439,8 +685,15 @@ def _signin_text(nickname: str, streak: int, coin: int, diamond: int, coin_after
     ]
     if diamond:
         rows.append(render.row("├ ", f"钻石：+{diamond}"))
+    for chest_id in chests:
+        chest = items.chest_of(chest_id)
+        if chest is not None:
+            rows.append(render.row("├ ", f"{chest.name}：+1"))
     rows.append(render.current("💰", "金币", coin_after))
-    return render.result(nickname, "🎁 签到成功", rows, tail="🎋 明天接着来，断一天连签就得重新数")
+    tail = "🎋 明天接着来，断一天连签就得重新数"
+    if chests:
+        tail = "📦 箱子在背包里，发「开宝箱 铜」就能开\n" + tail
+    return render.result(nickname, "🎁 签到成功", rows, tail=tail)
 
 
 def _fortune_text(nickname: str, tier: FortuneTier, text: str, coin_after: int) -> str:

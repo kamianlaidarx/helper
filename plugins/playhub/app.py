@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import logging
 
-from .core import render, switches
+from .core import activity, clock, render, switches
 from .core.menus import menu_for
-from .engines import GameRuntime, Reply, build_engines
+from .engines import GameRuntime, Reply, build_engines, msg_nickname
+from .engines import moderation
 from .keywords import TABLE
 from .registry import BINDINGS, dispatch
 from .router import route
@@ -74,6 +75,14 @@ HELP_TEXT = help_text()
 
 ERROR_TEXT = "这个玩法暂时出错了"
 
+
+def _nickname(msg, ctx) -> str:
+    """取发送者昵称，取不到就空串（`member_seen.nickname` 允许空，空不覆盖旧值）。"""
+    try:
+        return msg_nickname(msg, ctx)
+    except Exception:
+        return ""
+
 # kv 里 feature.<engine> 的值按这些写法视为「关闭」（§2.5：关闭时静默）
 _OFF_VALUES = frozenset({"0", "off", "false", "no", "disabled"})
 
@@ -95,6 +104,7 @@ class App:
             else build_engines(rng=rng, now_fn=now_fn, repo_root=repo_root)
         )
         self._log = logger if logger is not None else logging.getLogger("playhub.app")
+        self._now = now_fn if now_fn is not None else clock.now_ts
 
     # -- 主链路 -------------------------------------------------------------
     def handle_message(self, ctx, msg) -> Reply | None:
@@ -108,10 +118,17 @@ class App:
         if not isinstance(text, str) or not text.strip():
             return None
 
+        # 小黑屋 / 黑名单（§8.2）：静默——不响应命令、不参与抢答、不进排行、不记活跃。
+        # 排在 route 之前：连「他这个人在不在线」都不记，才算真的不进榜。
+        if self._muted(ctx, msg):
+            return None
+
         # route() 内部已做 NFKC/零宽/空白折叠（textkit.normalize_with_mentions），
         # 这里不重复归一化，避免两次归一化口径不一致。
         cmd = route(text)
         if cmd is None:
+            # 纯文本：先记一条活跃（§3.4「命令消息不重复计入」），再看是不是竞猜抢答。
+            self._touch(ctx, msg, text)
             # 关键词优先（§2.6 第 6 条）：没命中任何关键词才可能是竞猜抢答的答案。
             return self._plain_text(ctx, msg)
 
@@ -190,6 +207,55 @@ class App:
                 getattr(msg, "sender_id", ""),
             )
             return None
+
+    # -- 小黑屋 / 黑名单（静默闸）-------------------------------------------
+    def _muted(self, ctx, msg) -> bool:
+        """成员是否在小黑屋或黑名单里（§8.2）；读失败按「不在」处理。
+
+        为什么失败**开放**：这里挂掉会把全群所有人一起静音——比漏放一个被关的人
+        严重得多。真正的权限判定（关门/关门解除）在 `engines/moderation.py`，
+        那边是失败关闭。
+        """
+        if self._store is None:
+            return False
+        room = getattr(msg, "chat_id", "") or ""
+        uid = getattr(msg, "sender_id", "") or ""
+        if not isinstance(room, str) or not room or not isinstance(uid, str) or not uid:
+            return False
+        now = self._now()
+        try:
+            with self._store.tx(immediate=False) as conn:
+                return moderation.is_jailed(conn, room, uid, now) or moderation.is_blocked(conn, room, uid)
+        except Exception:
+            self._log.exception("读小黑屋/黑名单失败：room=%s uid=%s", room, uid)
+            return False
+
+    # -- 活跃计数（§3.4）-----------------------------------------------------
+    def _touch(self, ctx, msg, text: str) -> None:
+        """记一条活跃。只记**人话**：命令、机器人自己的消息都到不了这里。
+
+        计数失败只记 debug 日志：一条没记上会让活跃榜少一条，但不该让聊天卡住。
+        """
+        if self._store is None:
+            return
+        room = getattr(msg, "chat_id", "") or ""
+        uid = getattr(msg, "sender_id", "") or ""
+        if not isinstance(room, str) or not room or not isinstance(uid, str) or not uid:
+            return
+        now = self._now()
+        try:
+            with self._store.tx() as conn:
+                activity.record(
+                    conn,
+                    room=room,
+                    uid=uid,
+                    day=clock.day_of(now),
+                    now=now,
+                    nickname=_nickname(msg, ctx),
+                    chars=len(text),
+                )
+        except Exception:
+            self._log.debug("活跃计数失败：room=%s uid=%s", room, uid, exc_info=True)
 
     # -- 功能开关（kv: feature.<engine>）-------------------------------------
     def _feature_off(self, engine: str, msg) -> bool:

@@ -257,7 +257,7 @@ class BindingCase(unittest.TestCase):
         self.assertEqual(set(ACTION_PLAN), {t.action for t in TRIGGERS})
         self.assertEqual(ACTION_PLAN["daily.signin"], 1)
         self.assertEqual(ACTION_PLAN["social.marry"], 3)
-        self.assertIsNone(ACTION_PLAN["music.request"])
+        self.assertEqual(ACTION_PLAN["groupstat.dive"], 4)
 
     def test_check_bindings_passes(self):
         self.assertEqual(check_bindings(), len(BINDINGS))
@@ -271,9 +271,11 @@ class BindingCase(unittest.TestCase):
         self.assertIn(victim, str(ctx.exception))
 
     def test_strict_mode_rejects_every_unbound(self):
+        # 第 4 批之后全量绑定，严格模式只在真缺绑定时报错，所以注入缺一条的现场。
+        partial = {k: v for k, v in BINDINGS.items() if k != "groupstat.dive"}
         with self.assertRaises(BindingError) as ctx:
-            check_bindings(allow_unbound=False)
-        self.assertIn("music.request", str(ctx.exception))
+            check_bindings(bindings=partial, allow_unbound=False)
+        self.assertIn("groupstat.dive", str(ctx.exception))
 
     def test_unbound_action_is_silent(self):
         engine = FakeEngine()

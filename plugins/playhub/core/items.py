@@ -53,9 +53,50 @@ GIFTS: tuple[Gift, ...] = (
 )
 
 KIND_GIFT = "gift"
+KIND_BOX = "box"
+
+
+@dataclass(frozen=True)
+class Chest:
+    """一种宝箱：`coin`/`diamond` 是开启奖励，`diamond_odds` 是钻石命中概率的分母。"""
+
+    item_id: str
+    name: str
+    short: str
+    coin: int
+    diamond: int
+    diamond_odds: int
+    icon: str = "🎁"
+
+
+#: 箱子三型（数值来自 §4.4「宝箱三型」表，属**已定案**数值）。
+CHESTS: tuple[Chest, ...] = (
+    Chest("chest_bronze", "铜箱", "铜", 50, 1, 20, "🥉"),
+    Chest("chest_silver", "银箱", "银", 150, 1, 12, "🥈"),
+    Chest("chest_gold", "金箱", "金", 400, 2, 8, "🥇"),
+)
+
+CHEST_BRONZE, CHEST_SILVER, CHEST_GOLD = (c.item_id for c in CHESTS)
 
 _BY_ID = {g.item_id: g for g in GIFTS}
 _BY_NAME = {normalize(g.name): g for g in GIFTS}
+_CHEST_BY_ID = {c.item_id: c for c in CHESTS}
+_CHEST_BY_SHORT = {normalize(c.short): c for c in CHESTS}
+_CHEST_BY_NAME = {normalize(c.name): c for c in CHESTS}
+_CHEST_BY_SHORT.update({normalize(c.name[:-1]): c for c in CHESTS})
+
+#: 盲盒掉落表：`(item_id, weight)`。权重按「越便宜越常出」排，合计 100。
+#: 设计只定了盲盒的**次数价格**（5 钻/次，日限 2），没定掉落表，这里是落地口径；
+#: 门槛是「期望价值低于自购」——玫瑰 40% + 巧克力 25% 已经把 5 钻的期望压到 ≈82 金币，
+#: 低于戒指 520 的自购价，不至于让「买次数」变成稳赚的金币洗出通道。
+BLIND_BOX_ID = "blind_box_v1"
+BLIND_BOX_LOOT: tuple[tuple[str, int], ...] = (
+    ("rose", 40),
+    ("choc", 25),
+    ("cake", 18),
+    ("firework", 12),
+    ("ring", 5),
+)
 
 
 def gift_price_text() -> str:
@@ -64,7 +105,7 @@ def gift_price_text() -> str:
 
 
 def seed(conn: sqlite3.Connection) -> None:
-    """把 v1 礼物灌进 `item_def`（幂等：已存在的行不覆盖，便于群里改价）。"""
+    """把 v1 礼物与三种宝箱灌进 `item_def`（幂等：已存在的行不覆盖，便于群里改价）。"""
     conn.executemany(
         """
         INSERT INTO item_def (world, item_id, kind, name, rarity, price, stackable, weight, enabled)
@@ -73,6 +114,47 @@ def seed(conn: sqlite3.Connection) -> None:
         """,
         [(g.item_id, KIND_GIFT, g.name, g.price) for g in GIFTS],
     )
+    # 箱子不是卖品（price=NULL）：只能靠签到/活跃榜发，不能在群里买。
+    conn.executemany(
+        """
+        INSERT INTO item_def (world, item_id, kind, name, rarity, price, stackable, weight, enabled)
+        VALUES ('*', ?, ?, ?, ?, NULL, 1, 10, 1)
+        ON CONFLICT(world, item_id) DO NOTHING
+        """,
+        [(c.item_id, KIND_BOX, c.name, 2 + i) for i, c in enumerate(CHESTS)],
+    )
+
+
+def chest_price_text() -> str:
+    """`开宝箱` 用法里那行「铜 50 / 银 150 / 金 400」。"""
+    return " / ".join(f"{c.short} {c.coin}" for c in CHESTS)
+
+
+def find_chest(text: str) -> Chest | None:
+    """按短名（铜/银/金）或全名（铜箱/银箱/金箱）认箱子；认不出返回 None。"""
+    key = normalize(text or "")
+    if not key:
+        return None
+    return _CHEST_BY_SHORT.get(key) or _CHEST_BY_NAME.get(key) or _CHEST_BY_ID.get(key)
+
+
+def chest_of(item_id: str) -> Chest | None:
+    return _CHEST_BY_ID.get(item_id)
+
+
+def gift_of(item_id: str) -> Gift | None:
+    return _BY_ID.get(item_id)
+
+
+def roll_blind_box(rng) -> Gift:
+    """按 `BLIND_BOX_LOOT` 的权重抽一件礼物；`rng` 需有 `randrange`。"""
+    total = sum(w for _, w in BLIND_BOX_LOOT)
+    pick = rng.randrange(total)
+    for item_id, weight in BLIND_BOX_LOOT:
+        if pick < weight:
+            return _BY_ID[item_id]
+        pick -= weight
+    return _BY_ID[BLIND_BOX_LOOT[-1][0]]
 
 
 def find_by_name(conn: sqlite3.Connection, text: str) -> Gift | None:

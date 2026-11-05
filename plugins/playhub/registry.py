@@ -3,8 +3,11 @@
 第 2 批把 13 个竞猜动作全部绑到 `quiz` 引擎：
 `quiz.chengyu` / `song` / `riddle` / `movie` / `star` / `animal` / `plant` / `food`
 / `honor` / `anime` / `guoman` / `diff` / `trivia`。
-第 3 批起接 `social` 引擎：婚姻 + 闺蜜/结拜/雇佣/纳妾 + 关系卡/配对/礼物/宝宝
-（宝宝与关系卡同属社交面，共用 `pair` / `baby` 两张表，不另开引擎）。
+第 3 批起接四个引擎：
+- `social`：婚姻 + 闺蜜/结拜/雇佣/纳妾 + 关系卡/配对/礼物/宝宝（共用 `pair`/`baby`）；
+- `lottery`：盲盒与开宝箱（物品来源，`core/items.py` 的掉落表与箱型）；
+- `lounge`：文案馆 / 群空间 / 群聊；`duel`：切磋；`music`：点歌队列；
+- `outbound`：需要外部服务的功能，本批只有天气，默认离线占位 provider。
 
 未绑定的 action 一律静默 `return None`：不回「未开放」、不抛异常、不写日志噪音
 —— 与「关键词未命中」对外表现完全一致。
@@ -21,7 +24,7 @@ from dataclasses import dataclass
 
 from .keywords import TRIGGERS, Trigger
 
-CURRENT_BATCH = 3
+CURRENT_BATCH = 4
 
 
 class BindingError(Exception):
@@ -72,6 +75,28 @@ BINDINGS: dict[str, Binding] = {
     "social.match": Binding("social.match", "social", 3),
     "social.gift": Binding("social.gift", "social", 3),
     "baby.view": Binding("baby.view", "social", 3),
+    # 第 3 批：盲盒与开宝箱（物品来源，`core/items.py` 的掉落表与箱型）。
+    "lottery.blindbox": Binding("lottery.blindbox", "lottery", 3),
+    "lottery.chest": Binding("lottery.chest", "lottery", 3),
+    # 第 3 批：黄历 / 星座 / 求财神（纯本地文案库，日确定性）。
+    "daily.almanac": Binding("daily.almanac", "daily", 3),
+    "daily.horoscope": Binding("daily.horoscope", "daily", 3),
+    "daily.wealth": Binding("daily.wealth", "daily", 3),
+    # 第 3 批：文案馆 / 群空间 / 群聊（lounge 引擎）。
+    "lounge.copy": Binding("lounge.copy", "lounge", 3),
+    "lounge.space": Binding("lounge.space", "lounge", 3),
+    "lounge.chat": Binding("lounge.chat", "lounge", 3),
+    # 第 3 批：切磋（duel）、点歌（music）、天气（outbound 适配层）。
+    "duel.challenge": Binding("duel.challenge", "duel", 3),
+    "music.request": Binding("music.request", "music", 3),
+    "outbound.weather": Binding("outbound.weather", "outbound", 3),
+    # 第 4 批：群务。活跃榜在 ranking，其余两个各一个引擎。
+    "ranking.activity": Binding("ranking.activity", "ranking", 4),
+    "moderation.jail": Binding("moderation.jail", "moderation", 4),
+    "moderation.block": Binding("moderation.block", "moderation", 4),
+    "groupstat.dive": Binding("groupstat.dive", "groupstat", 4),
+    "groupstat.invite": Binding("groupstat.invite", "groupstat", 4),
+    "groupstat.rename": Binding("groupstat.rename", "groupstat", 4),
 }
 
 # ---------------------------------------------------------------------------
@@ -83,9 +108,9 @@ ACTION_PLAN: dict[str, int | None] = {
     "daily.fortune": 1,
     "ranking.top": 1,
     "business.help": 1,
-    "music.request": None,
-    "duel.challenge": None,
-    "daily.almanac": None,
+    "music.request": 3,
+    "duel.challenge": 3,
+    "daily.almanac": 3,
     "social.gift": 3,
     "social.marry": 3,
     "baby.view": 3,
@@ -93,12 +118,12 @@ ACTION_PLAN: dict[str, int | None] = {
     "social.concubine": 3,
     "social.employ": 3,
     "social.brother": 3,
-    "outbound.weather": None,
-    "daily.horoscope": None,
+    "outbound.weather": 3,
+    "daily.horoscope": 3,
     "social.match": 3,
-    "lottery.blindbox": None,
-    "lounge.copy": None,
-    "ranking.activity": None,
+    "lottery.blindbox": 3,
+    "lounge.copy": 3,
+    "ranking.activity": 4,
     "quiz.chengyu": 2,
     "quiz.song": 2,
     "quiz.riddle": 2,
@@ -111,17 +136,17 @@ ACTION_PLAN: dict[str, int | None] = {
     "quiz.anime": 2,
     "quiz.guoman": 2,
     "social.card": 3,
-    "daily.wealth": None,
-    "moderation.jail": None,
-    "moderation.block": None,
-    "lottery.chest": None,
-    "lounge.space": None,
+    "daily.wealth": 3,
+    "moderation.jail": 4,
+    "moderation.block": 4,
+    "lottery.chest": 3,
+    "lounge.space": 3,
     "quiz.diff": 2,
     "quiz.trivia": 2,
-    "groupstat.dive": None,
-    "groupstat.invite": None,
-    "groupstat.rename": None,
-    "lounge.chat": None,
+    "groupstat.dive": 4,
+    "groupstat.invite": 4,
+    "groupstat.rename": 4,
+    "lounge.chat": 3,
 }
 
 
