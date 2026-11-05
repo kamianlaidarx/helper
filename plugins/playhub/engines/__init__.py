@@ -101,10 +101,13 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
     from .daily import DailyEngine
     from .quiz import QuizEngine
     from .ranking import RankingEngine
+    from .social import SocialEngine
 
     return {
         "daily": DailyEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
         "ranking": RankingEngine(now_fn=now_fn),
         # 第 2 批：竞猜/找茬/问答共用这一个引擎（§4 第 10 条）
         "quiz": QuizEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
+        # 第 3 批：社交（本批先落婚姻段）
+        "social": SocialEngine(now_fn=now_fn),
     }

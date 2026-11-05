@@ -157,7 +157,7 @@ class StartTests(QuizTestBase):
     def test_start_creates_round_and_hides_answer(self) -> None:
         reply = self.say("猜成语")
         self.assertIsNotNone(reply)
-        self.assertIn("【猜成语】", reply.text)
+        self.assertIn("=====🀄猜成语🀄=====", reply.text)
 
         row = self.open_row()
         self.assertIsNotNone(row)
@@ -177,7 +177,7 @@ class StartTests(QuizTestBase):
         reply = self.say("猜动物")
         self.assertIsNotNone(reply)
         self.assertIn("上一局（猜成语）没答完，已结束", reply.text)
-        self.assertIn("【猜动物】", reply.text)
+        self.assertIn("=====🐾猜动物🐾=====", reply.text)
 
         with self.store.tx(immediate=False) as conn:
             closed = conn.execute(
@@ -205,7 +205,7 @@ class StartTests(QuizTestBase):
         self.clock.advance(301)
         second = self.say("猜成语")
         self.assertIsNotNone(second)
-        self.assertIn("【猜成语】", second.text)
+        self.assertIn("=====🀄猜成语🀄=====", second.text)
 
         with self.store.tx(immediate=False) as conn:
             closed = conn.execute(
@@ -225,7 +225,7 @@ class AnswerTests(QuizTestBase):
 
         self.assertIsNotNone(reply)
         self.assertIn("答对了", reply.text)
-        self.assertIn(f"+{COIN_CORRECT} 金币", reply.text)
+        self.assertIn(f"├ 金币：+{COIN_CORRECT}", reply.text)
         self.assertIsNone(self.open_row())
         self.assertEqual(self.coins(), COIN_CORRECT)
 
@@ -266,7 +266,7 @@ class AnswerTests(QuizTestBase):
         self.say("提示")
         self.clock.advance()
         reply = self.say(self.answer_of(row["question_id"]))
-        self.assertIn(f"+{COIN_CORRECT_HINTED} 金币", reply.text)
+        self.assertIn(f"├ 金币：+{COIN_CORRECT_HINTED}", reply.text)
         self.assertEqual(self.coins(), COIN_CORRECT_HINTED)
 
     def test_daily_win_cap(self) -> None:
@@ -348,7 +348,7 @@ class SubcommandTests(QuizTestBase):
 class DiffTests(QuizTestBase):
     def test_diff_accepts_changed_word(self) -> None:
         reply = self.say("找茬")
-        self.assertIn("【文字找茬】", reply.text)
+        self.assertIn("=====🔍文字找茬🔍=====", reply.text)
         row = self.open_row()
         self.clock.advance()
         hit = self.say("乙")

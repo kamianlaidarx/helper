@@ -1,14 +1,16 @@
 """playhub 动作绑定表 + 加载期自检 + dispatch（`docs/design/playhub.md:578`、`§7 第 1 批`）。
 
-本批（第 2 批）在原有 4 个动作之外，把 13 个竞猜动作全部绑到 `quiz` 引擎：
+第 2 批把 13 个竞猜动作全部绑到 `quiz` 引擎：
 `quiz.chengyu` / `song` / `riddle` / `movie` / `star` / `animal` / `plant` / `food`
 / `honor` / `anime` / `guoman` / `diff` / `trivia`。
+第 3 批起接 `social` 引擎：婚姻 + 闺蜜/结拜/雇佣/纳妾 + 关系卡/配对/礼物/宝宝
+（宝宝与关系卡同属社交面，共用 `pair` / `baby` 两张表，不另开引擎）。
 
 未绑定的 action 一律静默 `return None`：不回「未开放」、不抛异常、不写日志噪音
 —— 与「关键词未命中」对外表现完全一致。
 
 自检的开关是 `check_bindings(allow_unbound=...)` 与 `bindings=...` 注入：
-- 默认 `allow_unbound=True`：只要求**本批（batch=1）**的动作都已绑定，
+- 默认 `allow_unbound=True`：只要求**本批（batch=CURRENT_BATCH）**的动作都已绑定，
   后续批次的词可以暂时悬空；
 - `allow_unbound=False`：任何未绑定动作都报错，用于全量发布前的严格校验；
 - 注入 `bindings`：测试可构造「故意缺绑定」的现场验证报错内容。
@@ -19,7 +21,7 @@ from dataclasses import dataclass
 
 from .keywords import TRIGGERS, Trigger
 
-CURRENT_BATCH = 2
+CURRENT_BATCH = 3
 
 
 class BindingError(Exception):
@@ -59,6 +61,17 @@ BINDINGS: dict[str, Binding] = {
     "quiz.guoman": Binding("quiz.guoman", "quiz", 2),
     "quiz.diff": Binding("quiz.diff", "quiz", 2),
     "quiz.trivia": Binding("quiz.trivia", "quiz", 2),
+    # 第 3 批：社交段（婚姻 + 闺蜜/结拜/雇佣/纳妾，共用 pair 状态机）。
+    "social.marry": Binding("social.marry", "social", 3),
+    "social.sister": Binding("social.sister", "social", 3),
+    "social.brother": Binding("social.brother", "social", 3),
+    "social.employ": Binding("social.employ", "social", 3),
+    "social.concubine": Binding("social.concubine", "social", 3),
+    # 第 3 批：关系卡 / 配对 / 礼物 / 宝宝（同一个 social 引擎，宝宝也放在这里）。
+    "social.card": Binding("social.card", "social", 3),
+    "social.match": Binding("social.match", "social", 3),
+    "social.gift": Binding("social.gift", "social", 3),
+    "baby.view": Binding("baby.view", "social", 3),
 }
 
 # ---------------------------------------------------------------------------
@@ -73,16 +86,16 @@ ACTION_PLAN: dict[str, int | None] = {
     "music.request": None,
     "duel.challenge": None,
     "daily.almanac": None,
-    "social.gift": None,
-    "social.marry": None,
-    "baby.view": None,
-    "social.sister": None,
-    "social.concubine": None,
-    "social.employ": None,
-    "social.brother": None,
+    "social.gift": 3,
+    "social.marry": 3,
+    "baby.view": 3,
+    "social.sister": 3,
+    "social.concubine": 3,
+    "social.employ": 3,
+    "social.brother": 3,
     "outbound.weather": None,
     "daily.horoscope": None,
-    "social.match": None,
+    "social.match": 3,
     "lottery.blindbox": None,
     "lounge.copy": None,
     "ranking.activity": None,
@@ -97,7 +110,7 @@ ACTION_PLAN: dict[str, int | None] = {
     "quiz.honor": 2,
     "quiz.anime": 2,
     "quiz.guoman": 2,
-    "social.card": None,
+    "social.card": 3,
     "daily.wealth": None,
     "moderation.jail": None,
     "moderation.block": None,

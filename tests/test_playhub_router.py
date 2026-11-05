@@ -15,6 +15,7 @@ from plugins.playhub.keywords import (
 from plugins.playhub.registry import (
     ACTION_PLAN,
     BINDINGS,
+    CURRENT_BATCH,
     BindingError,
     check_bindings,
     dispatch,
@@ -242,40 +243,42 @@ class FakeEngine:
 
 
 class BindingCase(unittest.TestCase):
-    """绑定表只有 4 个动作（第 1 批 3 个玩法 + `帮助`）；未绑定动作静默；加载期自检可构造缺绑定。"""
+    """绑定表按批次增长：已绑定 == 计划批次 ≤ CURRENT_BATCH 的动作；未绑定动作静默。"""
+
+    def _expected_bound(self):
+        return {a for a, b in ACTION_PLAN.items() if b is not None and b <= CURRENT_BATCH}
 
     def test_bound_actions_match_batches(self):
-        batch1 = {"daily.signin", "daily.fortune", "ranking.top", "business.help"}
-        batch2 = {action for action in ACTION_PLAN if action.startswith("quiz.")}
-        self.assertEqual(set(BINDINGS), batch1 | batch2)
-        self.assertEqual(len(BINDINGS), len(batch1) + 13)
+        self.assertEqual(set(BINDINGS), self._expected_bound())
         for action, binding in BINDINGS.items():
             self.assertEqual(binding.batch, ACTION_PLAN[action], action)
 
     def test_action_plan_covers_every_keyword_action(self):
         self.assertEqual(set(ACTION_PLAN), {t.action for t in TRIGGERS})
         self.assertEqual(ACTION_PLAN["daily.signin"], 1)
-        self.assertEqual(ACTION_PLAN["social.marry"], None)
+        self.assertEqual(ACTION_PLAN["social.marry"], 3)
+        self.assertIsNone(ACTION_PLAN["music.request"])
 
     def test_check_bindings_passes(self):
         self.assertEqual(check_bindings(), len(BINDINGS))
 
     def test_missing_current_batch_action_raises(self):
-        # 只要求"当前批次"的动作必须绑定：第 2 批是 quiz.trivia，删掉它就报错。
-        partial = {k: v for k, v in BINDINGS.items() if k != "quiz.trivia"}
+        # 只要求"当前批次"的动作必须绑定：删掉任一 CURRENT_BATCH 的动作就报错。
+        victim = next(a for a, b in ACTION_PLAN.items() if b == CURRENT_BATCH)
+        partial = {k: v for k, v in BINDINGS.items() if k != victim}
         with self.assertRaises(BindingError) as ctx:
             check_bindings(bindings=partial)
-        self.assertIn("quiz.trivia", str(ctx.exception))
+        self.assertIn(victim, str(ctx.exception))
 
     def test_strict_mode_rejects_every_unbound(self):
         with self.assertRaises(BindingError) as ctx:
             check_bindings(allow_unbound=False)
-        self.assertIn("social.marry", str(ctx.exception))
+        self.assertIn("music.request", str(ctx.exception))
 
     def test_unbound_action_is_silent(self):
         engine = FakeEngine()
-        cmd = route("结婚@某人", [Mention(2, 5, "wxid_a")])
-        self.assertIsNone(dispatch(engine, "social.marry", cmd))
+        cmd = route("点歌 晴天")
+        self.assertIsNone(dispatch(engine, "music.request", cmd))
         self.assertEqual(engine.calls, [])
 
     def test_bound_action_dispatches(self):

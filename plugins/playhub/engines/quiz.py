@@ -28,7 +28,7 @@ from wxbot_framework.game_slot import release as release_slot
 
 from ..content.loader import Bank, BankError, load_bank
 from ..content.validate import normalize
-from ..core import clock, credit, ensure_player
+from ..core import balance, clock, credit, ensure_player, render
 from ..core.errors import DuplicatePosting
 from . import Reply, msg_nickname, msg_room, msg_uid, store_of
 
@@ -47,6 +47,23 @@ CATEGORY_BY_ACTION: dict[str, str] = {
     "quiz.guoman": "guoman",
     "quiz.diff": "diff",
     "quiz.trivia": "trivia",
+}
+
+#: 类目 → 卡面图标（小V 每个玩法一个固定图标，群里一眼分辨）
+CATEGORY_ICON: dict[str, str] = {
+    "chengyu": "🀄",
+    "song": "🎵",
+    "riddle": "🧩",
+    "movie": "🎬",
+    "star": "🌟",
+    "animal": "🐾",
+    "plant": "🌿",
+    "food": "🍜",
+    "honor": "⚔️",
+    "anime": "🎌",
+    "guoman": "🐉",
+    "diff": "🔍",
+    "trivia": "❓",
 }
 
 CATEGORY_LABEL: dict[str, str] = {
@@ -280,8 +297,15 @@ class QuizEngine:
 
         release_slot(room, SLOT_OWNER)      # 答对即收题，槽位立刻让出来
         who = msg_nickname(msg) or "有人"
-        suffix = f"，+{coin} 金币" if coin else "（今天的答题奖励已领满）"
-        return Reply(f"🎉 {who} 答对了，答案是「{answer}」{suffix}", f"quiz.{current.category}")
+        rows = [render.row("├ ", f"答案：{answer}")]
+        if coin:
+            rows.append(render.row("├ ", f"金币：+{coin}"))
+        else:
+            rows.append(render.row("├ ", f"金币：今天的答题奖励已领满（{WIN_CAP_PER_DAY} 次）"))
+        bal = self._coin_balance(store, room, uid)
+        if bal is not None:
+            rows.append(render.current("💰", "金币", bal))
+        return Reply(render.result(who, "🎉 答对了，这题是你的", rows), f"quiz.{current.category}")
 
     # -- 子命令 -------------------------------------------------------------
     def _subcommand(self, store, msg, ctx, room: str, uid: str, text: str, now: int) -> Reply | None:
@@ -294,11 +318,11 @@ class QuizEngine:
             if text == "提示":
                 hints = question.hints if question is not None else ()
                 if current.hint_level >= len(hints):
-                    return Reply("这题的提示已经给完了，可以发「公布答案」。", "quiz.hint")
+                    return Reply(render.tip("💡", "这题的提示已经给完了，可以发「公布答案」"), "quiz.hint")
                 level = current.hint_level + 1
                 conn.execute("UPDATE quiz_round SET hint_level = ? WHERE id = ?", (level, current.id))
                 return Reply(
-                    f"提示 {level}/{len(hints)}：{hints[level - 1]}", "quiz.hint"
+                    render.tip("💡", f"提示 {level}/{len(hints)}：{hints[level - 1]}"), "quiz.hint"
                 )
 
             answer = question.display if question is not None else "（题库缺失）"
@@ -309,13 +333,23 @@ class QuizEngine:
             if text == "公布答案":
                 release_slot(room, SLOT_OWNER)
                 return Reply(
-                    f"答案是「{answer}」。本题共 {current.attempts} 次作答。", "quiz.reveal"
+                    render.result(
+                        "",
+                        f"🎬 答案是「{answer}」",
+                        [render.row("📊 ", f"本题共 {current.attempts} 次作答")],
+                        at_sender=False,
+                    ),
+                    "quiz.reveal",
                 )
             if text in EXIT_WORDS:
                 release_slot(room, SLOT_OWNER)
                 return Reply(
-                    f"本局（{CATEGORY_LABEL.get(current.category, current.category)}）"
-                    f"已结束，答案是「{answer}」。",
+                    render.result(
+                        "",
+                        f"🛑 本局（{CATEGORY_LABEL.get(current.category, current.category)}）已结束",
+                        [render.row("🎬 ", f"答案是「{answer}」")],
+                        at_sender=False,
+                    ),
                     "quiz.quit",
                 )
 
@@ -333,7 +367,7 @@ class QuizEngine:
             label=CATEGORY_LABEL.get(current.category, current.category),
             ttl=ROUND_SECONDS,
         )
-        return Reply(self._decorate("换一题：\n" + text_new, ctx, msg), "quiz.next")
+        return Reply(self._decorate(render.row("🔄 ", "换一题") + "\n" + text_new, ctx, msg), "quiz.next")
 
     # -- 出题 / 选题 ---------------------------------------------------------
     def _pick(self, conn, bank: Bank, room: str, now: int):
@@ -376,9 +410,15 @@ class QuizEngine:
             (question.id, category, now),
         )
         label = CATEGORY_LABEL.get(category, category)
+        icon = CATEGORY_ICON.get(category, "🎯")
+        rows = [render.head("❓", question.q)]
         if category == "diff":
-            return f"【{label}】\n{question.q}\n\n直接发不一样的那个词。"
-        return f"【{label}】{question.q}\n\n直接发答案抢答；「提示」看提示，「公布答案」看答案。"
+            rows.append(render.tip("🔍", "直接发不一样的那个词"))
+        else:
+            rows.append(render.tip("💡", "直接发答案抢答；「提示」看提示、「公布答案」看答案"))
+        rows.append(render.row("⏱ ", f"{ROUND_SECONDS // 60} 分钟内抢答，第一个答对才算"))
+        rows.append(render.row("🎁 ", f"答对 +{COIN_CORRECT} 金币，用过提示 +{COIN_CORRECT_HINTED}"))
+        return render.menu(icon, label, rows)
 
     # -- 奖励 ---------------------------------------------------------------
     def _payout(self, conn, *, room: str, uid: str, msg, now: int, round_id: int, hinted: bool) -> int:
@@ -461,6 +501,15 @@ class QuizEngine:
         except BankError:
             return None
         return bank.by_id(question_id)
+
+    def _coin_balance(self, store, room: str, uid: str) -> int | None:
+        """结果卡上的「当前金币」：读不到就省掉这一行，不让回包因为余额查询失败而消失。"""
+        try:
+            with store.tx(immediate=False) as conn:
+                return balance(conn, room=room, uid=uid, currency="coin")
+        except Exception:
+            self._log.exception("读取金币余额失败：room=%s uid=%s", room, uid)
+            return None
 
     def _decorate(self, text: str, ctx, msg) -> str:
         """接龙冲突提醒：只探测插件是否激活，不读对方内部状态（§2.7）。"""

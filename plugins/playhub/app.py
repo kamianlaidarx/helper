@@ -19,41 +19,64 @@ from __future__ import annotations
 
 import logging
 
+from .core import render, switches
+from .core.menus import menu_for
 from .engines import GameRuntime, Reply, build_engines
 from .keywords import TABLE
 from .registry import BINDINGS, dispatch
 from .router import route
 
+# 动作 → 高危开关（`core/switches.py`）。不在这张表里的动作不受开关约束。
+# 只在配置里开、不做群内命令：见 switches 模块 docstring。
+ACTION_SWITCH: dict[str, str] = {
+    "social.marry": switches.MARRIAGE,
+    "social.sister": switches.KINSHIP,
+    "social.brother": switches.KINSHIP,
+    "social.employ": switches.EMPLOY,
+    "social.concubine": switches.CONCUBINE,
+    "baby.view": switches.BABY,
+}
+
 # 帮助文案。§1 清单把它排在 `business.py`（网页可编辑、8 段上限），
-# 但本批交付文件清单里没有 business.py，所以暂放这里，内容按 §7 / §2.6.1 / §8.6 写死；
+# 但本批交付文件清单里没有 business.py，所以暂放这里，形状按 `§4.5` 的小V 总览卡写；
 # business.py 落地后整段搬走，`help_text()` 改为读网页配置即可。
-HELP_TEXT = "\n".join(
-    (
-        "playhub 当前可用：",
-        "· 签到（别名 打卡）：每天一次，得金币；连签越久给得越多",
-        "· 抽签（别名 求签）：每天一次，得金币，上上签另加钻石",
-        "· 排行榜（别名 榜单）：金币榜前 10 名",
-        "· 出题抢答：猜成语 / 猜歌名 / 猜谜语 / 猜电影 / 猜明星 / 猜动物 /",
-        "  猜植物 / 猜美食 / 猜王者 / 猜动漫 / 猜国漫 / 找茬 / 问答",
-        "  发一个词就出一题，直接发答案抢答；「提示」看提示，「公布答案」看答案，",
-        "  「换一题」换一题，「结束」结束本群当前这一局（任何玩法都是它）",
-        "· 帮助：就是本条，随时可以再看",
-        "其余玩法将在后续批次开放。",
-        "命令前后不加标点，直接发词即可。",
-        "已知限制：接龙开局后，群里任何不以 / 开头的文本（包括签到）都会被当成接龙答案，"
-        "机器人会回一句「请输入一个完整的四字成语」，不花额度，但刷屏。",
-    )
+#
+# 分组只决定「先看哪一行」，不决定开关：开关在 `core/switches.py`，
+# 默认关闭的玩法在帮助里照列，并在行尾标 `（默认关闭）`——藏起来等于让用户猜。
+_HELP_GROUPS: tuple[tuple[str, str], ...] = (
+    ("💰", "签到 / 🎋 抽签 — 每天的固定收益，连签和签档都会加码"),
+    ("🏆", "排行榜 — 本群金币榜，发「排行榜 金币」也认"),
+    ("🀄", "竞猜 — 猜成语 / 猜歌名 / 猜谜语 / 猜电影 / 猜明星 / 猜动物 / 猜植物 / 猜美食 / "
+           "猜王者 / 猜动漫 / 猜国漫 / 找茬 / 问答"),
+    ("💘", "关系 — 结婚 / 闺蜜 / 结拜 / 雇佣 / 纳妾（默认关闭，需管理员在配置里开）"),
+    ("🎁", "配套 — 礼物 / 配对 / 关系卡 / 宝宝"),
+    ("🎮", "娱乐 — 点歌 / 切磋 / 盲盒 / 开宝箱 / 文案 / 群空间 / 聊天"),
+    ("📅", "信息 — 天气 / 黄历 / 星座 / 求财神"),
+    ("📊", "群务 — 活跃榜 / 潜水 / 邀请 / 改名 / 小黑屋 / 黑名单"),
 )
+
+
+def help_text() -> str:
+    """总览卡（小V 的 `💡使用指引` 形状）：装饰头 → 分组行 → 用法注释 → 已知限制。"""
+    rows = [render.head(icon, text) for icon, text in _HELP_GROUPS]
+    rows.append(render.rule())
+    rows.append(render.note("把某个关键词单独发一次，我就回一张这个玩法的说明书；"
+                            "命令前后不加标点"))
+    rows.append("💡 出题抢答：发一个词就出题，直接发答案抢答；「提示」看提示、"
+                "「公布答案」看答案、「换一题」换一题、「结束」收局")
+    rows.append("🔧 已知限制：对局状态存在内存里，机器人重启会丢；接龙开局期间群里"
+                "非 / 开头的文本都会被当成接龙答案")
+    text = render.Card("✨", "玩法总览", tuple(rows)).render()
+    return render.limit(text, max_lines=24, max_chars=1800)
+
+
+HELP_TEXT = help_text()
 
 ERROR_TEXT = "这个玩法暂时出错了"
 
 # kv 里 feature.<engine> 的值按这些写法视为「关闭」（§2.5：关闭时静默）
 _OFF_VALUES = frozenset({"0", "off", "false", "no", "disabled"})
 
-
-def help_text() -> str:
-    """帮助文案（本批可用动作 + 后续批次说明 + 已知限制）。"""
-    return HELP_TEXT
 
 
 class App:
@@ -95,8 +118,6 @@ class App:
         trigger = TABLE.trigger(cmd.name)
         if trigger is None:                     # 理论上 route 已保证命中，防御性返回
             return None
-        if not cmd.had_arg and trigger.bare_behavior == "silent":
-            return None                         # 高风险裸触发：静默（§2.6.6）
 
         binding = BINDINGS.get(cmd.action)
         if binding is None:
@@ -108,6 +129,23 @@ class App:
 
         if self._feature_off(binding.engine, msg):
             return None                         # feature.<engine> 关闭：静默
+
+        if self._switch_off(cmd.action, msg):
+            return None                         # 高危功能未在本群开启：静默
+
+        if not cmd.had_arg:
+            # 裸发分两种，按 §4.5 卡面规范：
+            # - 需要参数 / 引导型（结婚、闺蜜、天气…）→ 回一张说明书卡，
+            #   对应小V 的「群内发 XX 查看」；
+            # - 不需要参数的（签到、抽签、竞猜、排行榜）→ 照常执行，卡片会挡住真正的动作。
+            # 卡面排在 feature/高危开关之后：开关没开就什么都不回，不泄露玩法存在。
+            card = None
+            if trigger.needs_arg or trigger.bare_behavior == "guide":
+                card = menu_for(cmd.action)
+            if card is not None:
+                return Reply(card, cmd.action)
+            if trigger.bare_behavior == "silent":
+                return None                     # 高风险裸触发且没有卡：静默（§2.6.6）
 
         engine = self._engines.get(binding.engine)
         if engine is None:
@@ -177,3 +215,25 @@ class App:
             return False
         value = row[0]
         return isinstance(value, str) and value.strip().lower() in _OFF_VALUES
+
+    # -- 高危开关（kv: feature.<键>，5 个，默认关）---------------------------
+    def _switch_off(self, action: str, msg) -> bool:
+        """动作受高危开关约束时，判断它在本群是否**未开启**。
+
+        与 `_feature_off` 的关键差别：读不到按**关**（失败关闭）——这些是
+        「改关系状态 + 花大钱」的功能，坏数据和缺配置都不该让它们自动打开。
+        """
+        name = ACTION_SWITCH.get(action)
+        if name is None:
+            return False
+        if self._store is None:
+            return True
+        room = getattr(msg, "chat_id", "") or ""
+        if not isinstance(room, str) or not room:
+            return True
+        try:
+            with self._store.tx(immediate=False) as conn:
+                return not switches.is_on(conn, room, name)
+        except Exception:
+            self._log.exception("读高危开关失败：switch=%s room=%s", name, room)
+            return True

@@ -6,7 +6,7 @@
    `wallet` / `wallet_ledger` / `daily_counter` 三张表存在。
 2. 连接复用：同账号第二条消息复用同一个 `Store` 实例，不重复开库。
 3. 账号隔离：两个账号 → 两个目录，各记各的流水。
-4. 走通路径：「签到」回一条「签到成功…」，金币+流水+计数器各 1 行；
+4. 走通路径：「签到」回一张「🎁 签到成功」结果卡，金币+流水+计数器各 1 行；
    「帮助」回 `HELP_TEXT` 且不碰钱包。
 5. 静默路径：非群 / 空文本 / 自己发的消息 → 不回复、不建目录。
 6. 兜底：`ctx.reply` 抛异常不冒泡、只记日志，后续消息照常回。
@@ -178,7 +178,7 @@ class EntryCase(unittest.TestCase):
 
         self.assertEqual(len(self.ctx.replies), 1)
         _message, text = self.ctx.replies[0]
-        self.assertTrue(text.startswith("签到成功"), text)
+        self.assertTrue(text.startswith("@小明\n🎁 签到成功"), text)
 
         db = self.db_path()
         self.assertEqual(fetch(db, "SELECT COUNT(*) FROM wallet WHERE currency = 'coin'")[0][0], 1)

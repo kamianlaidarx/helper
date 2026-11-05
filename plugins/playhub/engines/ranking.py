@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from ..core import clock
+from ..core import clock, render
 from . import DEFAULT_LIMIT, Reply, msg_room, store_of
 
 Board = Literal["coin", "activity", "marriage", "invite"]
@@ -98,14 +98,18 @@ def top(
     )
 
 
-def format_board(rows: tuple[RankRow, ...]) -> str:
-    """`1. 昵称 N 金币`，一行一名；无数据回「榜单还没有数据」。
+_MEDALS = ("🥇", "🥈", "🥉")
 
-    不加标题行：§4 / §3.4 都没给金币榜的抬头文案，宁可不写（见报告「文档缺失项」）。
-    """
+
+def format_board(rows: tuple[RankRow, ...]) -> str:
+    """金币榜卡：前三名挂奖牌，其余用 `·`；空榜回一行提示（`§4.5` 卡面规范）。"""
     if not rows:
-        return BOARD_EMPTY
-    return "\n".join(f"{row.rank}. {row.nickname or row.uid} {row.score} 金币" for row in rows)
+        return render.tip("⚠", BOARD_EMPTY)
+    lines = []
+    for row in rows:
+        icon = _MEDALS[row.rank - 1] if row.rank <= len(_MEDALS) else "·"
+        lines.append(render.row(f"{icon} ", f"{row.rank}. {row.nickname or row.uid} {row.score} 金币"))
+    return render.menu("🏆", "金币榜", lines, note_text="取当前余额，花掉的金币不在榜上")
 
 
 class RankingEngine:

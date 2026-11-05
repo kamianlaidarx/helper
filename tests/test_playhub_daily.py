@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import random
 import tempfile
+import re
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -185,7 +186,10 @@ class SigninFormulaTest(unittest.TestCase):
 class SigninTest(DailyCase):
     def test_first_signin_gives_30(self):
         reply = self.signin()
-        self.assertEqual(reply.text, "签到成功：连签 1 天，金币 +30，当前金币 30")
+        self.assertTrue(reply.text.startswith("@小明\n🎁 签到成功"), reply.text)
+        self.assertIn("├ 连签：1 天", reply.text)
+        self.assertIn("├ 金币：+30", reply.text)
+        self.assertIn("💰当前金币：30", reply.text)
         self.assertEqual(self.coins(), 30)
         self.assertEqual(self.diamonds(), 0)
         rows = self.ledger()
@@ -196,7 +200,9 @@ class SigninTest(DailyCase):
         self.signin()
         self.clock.add()
         reply = self.signin()
-        self.assertEqual(reply.text, "签到成功：连签 2 天，金币 +35，当前金币 65")
+        self.assertIn("├ 连签：2 天", reply.text)
+        self.assertIn("├ 金币：+35", reply.text)
+        self.assertIn("💰当前金币：65", reply.text)
         self.assertEqual(self.coins(), 65)
 
     def test_seventh_day_adds_3_diamonds(self):
@@ -219,8 +225,8 @@ class SigninTest(DailyCase):
             self.signin()
             self.clock.add()
         reply = self.signin()
-        self.assertIn("钻石 +3", reply.text)
-        self.assertIn("金币 +60", reply.text)      # 30 + 5×min(7-1,10) = 60
+        self.assertIn("├ 钻石：+3", reply.text)
+        self.assertIn("├ 金币：+60", reply.text)    # 30 + 5×min(7-1,10) = 60
 
     def test_fourteenth_day_gives_another_3(self):
         for _ in range(13):
@@ -234,7 +240,9 @@ class SigninTest(DailyCase):
         deltas = []
         for _ in range(16):
             reply = self.signin()
-            deltas.append(int(reply.text.split("金币 +")[1].split("，")[0]))
+            matched = re.search(r"├ 金币：\+(\d+)", reply.text)
+            self.assertIsNotNone(matched, reply.text)
+            deltas.append(int(matched.group(1)))
             self.clock.add()
         self.assertEqual(deltas[:3], [30, 35, 40])
         self.assertEqual(deltas[9], 75)            # 第 10 天
@@ -244,7 +252,8 @@ class SigninTest(DailyCase):
         self.signin()
         self.clock.add(2)                          # 隔一天没签
         reply = self.signin()
-        self.assertEqual(reply.text, "签到成功：连签 1 天，金币 +30，当前金币 60")
+        self.assertIn("├ 连签：1 天", reply.text)
+        self.assertIn("💰当前金币：60", reply.text)
 
     def test_same_day_twice_no_double_credit(self):
         self.signin()
@@ -319,10 +328,11 @@ class FortuneTest(DailyCase):
                 before = self.coins()
                 self.clock.add()
                 reply = self.fortune(rng=FakeRng(roll))
-                self.assertTrue(reply.text.startswith(f"抽签：{name}，金币 +{coin}"), reply.text)
+                self.assertTrue(reply.text.startswith(f"@小明\n🎋 抽到「{name}」"), reply.text)
+                self.assertIn(f"├ 金币：+{coin}", reply.text)
                 self.assertEqual(self.coins(), before + coin)
                 if diamond:
-                    self.assertIn(f"钻石 +{diamond}", reply.text)
+                    self.assertIn(f"├ 钻石：+{diamond}", reply.text)
 
     def test_weight_ratio_over_1200_draws(self):
         rng = random.Random(2026)

@@ -237,10 +237,13 @@ class RankingTopTest(StoreCase):
             RankRow(room=ROOM, uid="wxid_a", score=1200, rank=1, nickname="玩家11"),
             RankRow(room=ROOM, uid="wxid_b", score=200, rank=2, nickname=""),  # 没昵称回退 uid
         )
-        self.assertEqual(format_board(rows), "1. 玩家11 1200 金币\n2. wxid_b 200 金币")
+        self.assertEqual(
+            format_board(rows),
+            "=====🏆金币榜🏆=====\n🥇 1. 玩家11 1200 金币\n🥈 2. wxid_b 200 金币\n════════════════════\n⚠注：取当前余额，花掉的金币不在榜上",
+        )
 
     def test_format_empty(self):
-        self.assertEqual(format_board(()), BOARD_EMPTY)
+        self.assertEqual(format_board(()), "⚠ 提示：榜单还没有数据")
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +261,7 @@ class RankingCommandTest(StoreCase):
         reply = self.app.handle_message(None, FakeMsg("排行榜"))
         self.assertIsInstance(reply, Reply)
         self.assertEqual(reply.action, "ranking.top")
-        self.assertEqual(reply.text, "1. 小明 300 金币")
+        self.assertIn("🥇 1. 小明 300 金币", reply.text)
 
     def test_alias_and_explicit_coin_arg(self):
         self.seed_player("wxid_a", "小明", 300)
@@ -266,12 +269,12 @@ class RankingCommandTest(StoreCase):
             with self.subTest(text=text):
                 reply = self.app.handle_message(None, FakeMsg(text))
                 self.assertIsNotNone(reply)
-                self.assertEqual(reply.text, "1. 小明 300 金币")
+                self.assertIn("🥇 1. 小明 300 金币", reply.text)
 
     def test_empty_board(self):
         reply = self.app.handle_message(None, FakeMsg("排行榜"))
         self.assertIsNotNone(reply)
-        self.assertEqual(reply.text, BOARD_EMPTY)
+        self.assertEqual(reply.text, "⚠ 提示：榜单还没有数据")
 
     def test_unavailable_boards_are_silent(self):
         self.seed_player("wxid_a", "小明", 300)
@@ -307,7 +310,8 @@ class AppSilentPathTest(StoreCase):
                 self.assertQuiet(text)
 
     def test_silent_bare_trigger(self):
-        for word in ("礼物", "结婚", "宝宝", "闺蜜", "纳妾"):
+        # 礼物的裸发走触发卡（第 3 批上线后），静默只剩五个受开关管的动作
+        for word in ("结婚", "宝宝", "闺蜜", "纳妾", "雇佣"):
             with self.subTest(word=word):
                 trigger = TABLE.trigger(word)
                 self.assertIsNotNone(trigger, f"{word} 应当是触发词")
@@ -351,7 +355,7 @@ class AppCommandTest(StoreCase):
         reply = self.app.handle_message(None, FakeMsg("签到"))
         self.assertIsNotNone(reply)
         self.assertEqual(reply.action, "daily.signin")
-        self.assertIn("连签 1 天", reply.text)
+        self.assertIn("├ 连签：1 天", reply.text)
         self.assertEqual(self.coins(), 30)
         self.assertEqual(len(self.ledger()), 1)
 
@@ -446,7 +450,7 @@ class InvariantI1Test(StoreCase):
         # 签文库缺失 + 空榜：这两条文案也必须过 I1。
         app = self.new_app("app")
         empty = app.handle_message(None, FakeMsg("排行榜"))   # 签到会建号，所以空榜先查
-        self.assertEqual(empty.text, BOARD_EMPTY)
+        self.assertEqual(empty.text, "⚠ 提示：榜单还没有数据")
         replies = [empty, *self.collect(app)]
         self.assertTrue(any(reply.text == FORTUNE_NOT_READY for reply in replies))
         for reply in replies:
@@ -464,20 +468,18 @@ class InvariantI1Test(StoreCase):
 # 帮助
 # ---------------------------------------------------------------------------
 class HelpTextTest(unittest.TestCase):
-    """§7：帮助只列本批可用的三个动作，并给出后续批次与已知限制说明。"""
+    """§4.5 / §7：帮助是一张总览卡，列全部分组，并保留一行已知限制说明。"""
 
     def test_lists_current_features(self):
         text = help_text()
         self.assertEqual(text, HELP_TEXT)
-        for word in ("签到", "打卡", "抽签", "求签", "排行榜", "榜单"):
+        self.assertTrue(text.startswith("====="), text)     # §4.5：总览卡也要装饰头
+        for word in ("签到", "抽签", "排行榜", "猜成语", "找茬", "问答",
+                     "提示", "公布答案", "换一题", "结束"):
             self.assertIn(word, text)
-        # 第 2 批已接线的竞猜词必须出现在帮助里
-        for word in ("猜成语", "找茬", "问答", "提示", "公布答案", "换一题", "结束"):
+        # 第 3 批的关系玩法必须出现在总览里，并标明默认关闭——藏起来等于让用户猜
+        for word in ("结婚", "闺蜜", "结拜", "雇佣", "纳妾", "默认关闭"):
             self.assertIn(word, text)
-        self.assertIn("其余玩法将在后续批次开放", text)
-        # 仍未开放的玩法不得出现在帮助里
-        for word in ("点歌", "结婚", "宝宝", "纳妾", "闺蜜", "结拜"):
-            self.assertNotIn(word, text)
 
     def test_keeps_known_limitation(self):
         # §8.6：帮助必须保留一行已知限制说明。

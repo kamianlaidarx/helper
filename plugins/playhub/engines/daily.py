@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..core import clock, credit, ensure_player
+from ..core import clock, credit, ensure_player, render
 from ..core.errors import DuplicatePosting
 from . import Reply, msg_nickname, msg_room, msg_uid, store_of
 
@@ -336,7 +336,7 @@ class DailyEngine:
 
         if already:                      # Reply 一律在 COMMIT 之后构造，事务内不发送
             return Reply(SIGNIN_ALREADY, "daily.signin")
-        return Reply(_signin_text(streak, coin, diamond, coin_after), "daily.signin")
+        return Reply(_signin_text(nickname, streak, coin, diamond, coin_after), "daily.signin")
 
     # -- 抽签 ---------------------------------------------------------------
     def draw_tier(self) -> FortuneTier:
@@ -406,7 +406,7 @@ class DailyEngine:
 
         if already:
             return Reply(FORTUNE_ALREADY, "daily.fortune")
-        return Reply(_fortune_text(tier, text, coin_after), "daily.fortune")
+        return Reply(_fortune_text(nickname, tier, text, coin_after), "daily.fortune")
 
     # -- 内部 ---------------------------------------------------------------
     def _bank(self, store) -> tuple[tuple[str, str], ...] | None:
@@ -431,17 +431,23 @@ def _pick_text(bank: tuple[tuple[str, str], ...], tier: str) -> str | None:
     return None
 
 
-def _signin_text(streak: int, coin: int, diamond: int, coin_after: int) -> str:
-    """签到成功文案。文案本身文档没给，用最朴素的中文（见报告「文档缺失项」）。"""
-    parts = [f"签到成功：连签 {streak} 天，金币 +{coin}"]
+def _signin_text(nickname: str, streak: int, coin: int, diamond: int, coin_after: int) -> str:
+    """签到结果卡（小V 格式：点人 → 明细 → 当前余额 → 一句彩蛋，见 `core/render.py`）。"""
+    rows = [
+        render.row("├ ", f"连签：{streak} 天"),
+        render.row("├ ", f"金币：+{coin}"),
+    ]
     if diamond:
-        parts.append(f"钻石 +{diamond}")
-    parts.append(f"当前金币 {coin_after}")
-    return "，".join(parts)
+        rows.append(render.row("├ ", f"钻石：+{diamond}"))
+    rows.append(render.current("💰", "金币", coin_after))
+    return render.result(nickname, "🎁 签到成功", rows, tail="🎋 明天接着来，断一天连签就得重新数")
 
 
-def _fortune_text(tier: FortuneTier, text: str, coin_after: int) -> str:
-    head = f"抽签：{tier.name}，金币 +{tier.coin}"
+def _fortune_text(nickname: str, tier: FortuneTier, text: str, coin_after: int) -> str:
+    """抽签结果卡：签档 + 奖励 + 当前余额 + 签文（签文原样保留，不改写、不截断）。"""
+    rows = [render.row("├ ", f"金币：+{tier.coin}")]
     if tier.diamond:
-        head += f"，钻石 +{tier.diamond}"
-    return f"{head}（当前金币 {coin_after}）\n{text}"
+        rows.append(render.row("├ ", f"钻石：+{tier.diamond}"))
+    rows.append(render.current("💰", "金币", coin_after))
+    rows.append(render.quote("📜", text))
+    return render.result(nickname, f"🎋 抽到「{tier.name}」", rows)
