@@ -6,7 +6,7 @@ import re
 WXID = re.compile(r"^[A-Za-z0-9_.@-]{1,127}$")
 SYSTEM_PEERS = frozenset({"weixin", "fmessage", "newsapp", "floatbottle"})
 GROUP_CONTROL_COMMANDS = frozenset({"/help", "成语接龙", "合并接龙", "退出接龙", "看图猜成语", "/看图猜成语",
-                                     "提示", "换一题", "公布答案", "退出猜成语"})
+                                     "提示", "换一题", "公布答案", "退出猜成语", "结束"})
 FOUR_CHINESE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff]{4}$")
 
 

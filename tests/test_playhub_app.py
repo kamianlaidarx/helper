@@ -472,7 +472,7 @@ class HelpTextTest(unittest.TestCase):
         for word in ("签到", "打卡", "抽签", "求签", "排行榜", "榜单"):
             self.assertIn(word, text)
         # 第 2 批已接线的竞猜词必须出现在帮助里
-        for word in ("猜成语", "找茬", "问答", "提示", "公布答案", "换一题", "退出猜成语"):
+        for word in ("猜成语", "找茬", "问答", "提示", "公布答案", "换一题", "结束"):
             self.assertIn(word, text)
         self.assertIn("其余玩法将在后续批次开放", text)
         # 仍未开放的玩法不得出现在帮助里

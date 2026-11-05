@@ -9,6 +9,8 @@ from pathlib import Path
 import random
 import time
 
+from wxbot_framework.game_slot import claim as claim_slot
+from wxbot_framework.game_slot import release as release_slot
 from wxbot_framework.members import SnapshotExpired
 from wxbot_framework.personality import personality_text
 from wxbot_framework.text import FOUR_CHINESE
@@ -17,7 +19,9 @@ from .render import CardRenderer
 from .source import FFAPI, RepeatedQuestion, SourceError
 
 START = frozenset({'看图猜成语', '/看图猜成语'})
-COMMANDS = START | {'提示', '换一题', '公布答案', '退出猜成语'}
+EXIT = frozenset({'退出猜成语', '结束'})   # 「结束」是全局通用的收局词
+COMMANDS = START | EXIT | {'提示', '换一题', '公布答案'}
+SLOT_OWNER = 'picture_idiom'
 
 
 @dataclass
@@ -124,6 +128,8 @@ class Plugin:
         if service is not None and not service.session_is_current(message.session_id):
             return
         if self.session_id != message.session_id:
+            for room in tuple(self.games):
+                release_slot(room, SLOT_OWNER)
             self.games.clear()
             self.session_id = message.session_id
         text = message.text.strip()
@@ -133,21 +139,29 @@ class Plugin:
             return
         if text == '成语接龙' and getattr(ctx, 'plugin_is_active', lambda name: False)('idiom_chain'):
             self.games.pop(message.chat_id, None)
+            release_slot(message.chat_id, SLOT_OWNER)
             return
         game = self.games.get(message.chat_id)
         if text in START:
             if game is None:
+                busy = claim_slot(message.chat_id, SLOT_OWNER, label='看图猜成语')
+                if busy is not None:
+                    ctx.reply(message, f'本群还有一局{busy}没结束，先发「结束」。')
+                    return
                 game = Game(self._deck(opening=True))
                 if self._question(message, ctx, game):
                     self.games[message.chat_id] = game
+                else:
+                    release_slot(message.chat_id, SLOT_OWNER)
             elif game.current is None:
                 self._question(message, ctx, game)
             else:
                 ctx.reply_image(message, game.current.image_path or self.renderer.render(game.current))
             return
-        if text == '退出猜成语':
+        if text in EXIT:
             if self.games.pop(message.chat_id, None) is not None:
-                ctx.reply(message, '已退出看图猜成语。')
+                release_slot(message.chat_id, SLOT_OWNER)
+                ctx.reply(message, '已退出看图猜成语。' if text == '退出猜成语' else '看图猜成语已结束。')
             return
         if game is None:
             return

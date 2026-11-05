@@ -6,8 +6,8 @@
 1. **答案不存明文**：`quiz_round.answer_norm` 存 JSON 数组形式的 sha256
    （一条题可以有多个等价答案）。公布答案时才按 `question_id` 回题库取明文，
    所以 `quiz_round` 泄露也看不到答案。
-2. **子命令复用框架词**：`提示`/`换一题`/`公布答案`/`退出猜成语` 是框架
-   `GROUP_CONTROL_COMMANDS` 里的词（`wxbot_framework/text.py:8-9`），playhub
+2. **子命令复用框架词**：`提示`/`换一题`/`公布答案`/`结束` 是框架
+   `GROUP_CONTROL_COMMANDS` 里的词（`wxbot_framework/text.py:8-10`），playhub
    **不注册**它们；只有本群存在未结束对局时才消费，否则立刻返回、绝不回包。
 3. **关键词优先于纯文本**：`app.handle_message` 先 `route()`，命中命令就不再进
    `on_plain_text`（`:577`）。所以 `签到` 不会被当成答案，抢答也不会吃掉 61 个关键词。
@@ -22,6 +22,9 @@ import logging
 import random
 from dataclasses import dataclass
 from typing import Any
+
+from wxbot_framework.game_slot import claim as claim_slot
+from wxbot_framework.game_slot import release as release_slot
 
 from ..content.loader import Bank, BankError, load_bank
 from ..content.validate import normalize
@@ -63,9 +66,14 @@ CATEGORY_LABEL: dict[str, str] = {
 }
 
 # 框架控制词：只在有未结束对局时消费（见文件头第 2 条）。
-SUBCOMMANDS = frozenset({"提示", "换一题", "公布答案", "退出猜成语"})
+SUBCOMMANDS = frozenset({"提示", "换一题", "公布答案"})
+
+# 结束词只有一个：`结束` 就是「结束本群当前这一局」，不按类目分。
+# `退出猜成语` 保留兼容（它是框架 GROUP_CONTROL_COMMANDS 里的词）。
+EXIT_WORDS = frozenset({"结束", "退出猜成语"})
 
 ROUND_SECONDS = 300              # 单题时限；quiz_gc 的默认值与此对齐
+SLOT_OWNER = "playhub"           # 共享游戏槽（wxbot_framework/game_slot.py）里的署名
 RECENT_ROUNDS = 50               # 同群近 N 题不重复（:1442）
 RECENT_DAYS = 7                  # 7 天内出过的题不再出
 MAX_ATTEMPTS_PER_ROUND = 200     # 单局作答上限，防刷屏
@@ -189,7 +197,7 @@ class QuizEngine:
         if current is None or current.expires_at <= now:
             return None                      # 没有对局 / 已超时：什么都不做
 
-        if text in SUBCOMMANDS:
+        if text in SUBCOMMANDS or text in EXIT_WORDS:
             return self._subcommand(store, msg, ctx, room, uid, text, now)
         return self._judge(store, msg, room, uid, text, now)
 
@@ -204,24 +212,32 @@ class QuizEngine:
         now = int(self._now())
         label = CATEGORY_LABEL.get(category, category)
 
-        # 先看有没有没答完的题：它比「这个类目题库没好」更该先说，也省一次读盘。
-        running = self._read_open(store, room)
-        if running is not None and running.expires_at > now:
-            return Reply(self._busy_text(store, running), f"quiz.{category}")
-
         try:
             bank = self._bank(store, category)
         except BankError as exc:
             self._log.warning("题库不可用：category=%s reason=%s", category, exc.reason)
             return Reply(f"「{label}」的题库还没准备好，回头再试试。", f"quiz.{category}")
 
+        # 一个群同时只玩一局（不管那是哪个插件的玩法）：先抢槽，被占就不开局。
+        busy = claim_slot(room, SLOT_OWNER, label=label, ttl=ROUND_SECONDS)
+        if busy is not None:
+            return Reply(f"本群还有一局{busy}没结束，先发「结束」。", f"quiz.{category}")
+
+        # 同一群同时只留一局（`quiz_one_open` 部分唯一索引）：新局开起来，
+        # 上一局不论哪个类目都就地结束，并在回包里说清关了哪一局。
         with store.tx() as conn:
             self._sweep(conn, now, room=room)
-            running = _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
-            if running is not None:              # 上面那次读之后被别的消息抢先开局
-                return Reply(self._busy_text(store, running), f"quiz.{category}")
+            previous = _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
+            if previous is not None:
+                conn.execute(
+                    "UPDATE quiz_round SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
+                    (now, previous.id),
+                )
             question = self._pick(conn, bank, room, now)
             text = self._open_round(conn, room, category, bank, question, now)
+        if previous is not None:
+            closed_label = CATEGORY_LABEL.get(previous.category, previous.category)
+            text = f"上一局（{closed_label}）没答完，已结束。\n{text}"
         return Reply(self._decorate(text, ctx, msg), f"quiz.{category}")
 
     # -- 抢答 ---------------------------------------------------------------
@@ -262,6 +278,7 @@ class QuizEngine:
             coin = self._payout(conn, room=room, uid=uid, msg=msg, now=now,
                                 round_id=current.id, hinted=current.hint_level > 0)
 
+        release_slot(room, SLOT_OWNER)      # 答对即收题，槽位立刻让出来
         who = msg_nickname(msg) or "有人"
         suffix = f"，+{coin} 金币" if coin else "（今天的答题奖励已领满）"
         return Reply(f"🎉 {who} 答对了，答案是「{answer}」{suffix}", f"quiz.{current.category}")
@@ -290,19 +307,32 @@ class QuizEngine:
                 (now, current.id),
             )
             if text == "公布答案":
+                release_slot(room, SLOT_OWNER)
                 return Reply(
                     f"答案是「{answer}」。本题共 {current.attempts} 次作答。", "quiz.reveal"
                 )
-            if text == "退出猜成语":
-                return Reply(f"本局已结束，答案是「{answer}」。", "quiz.quit")
+            if text in EXIT_WORDS:
+                release_slot(room, SLOT_OWNER)
+                return Reply(
+                    f"本局（{CATEGORY_LABEL.get(current.category, current.category)}）"
+                    f"已结束，答案是「{answer}」。",
+                    "quiz.quit",
+                )
 
             # 换一题：同一类目再开一局
             try:
                 bank = self._bank(store, current.category)
             except BankError:
+                release_slot(room, SLOT_OWNER)
                 return Reply(f"本局已结束，答案是「{answer}」。", "quiz.next")
             question = self._pick(conn, bank, room, now)
             text_new = self._open_round(conn, room, current.category, bank, question, now)
+        # 新局仍是我们的，续期即可；这里若被别的玩法抢走就不该续（claim 返回对方标签）
+        claim_slot(
+            room, SLOT_OWNER,
+            label=CATEGORY_LABEL.get(current.category, current.category),
+            ttl=ROUND_SECONDS,
+        )
         return Reply(self._decorate("换一题：\n" + text_new, ctx, msg), "quiz.next")
 
     # -- 出题 / 选题 ---------------------------------------------------------
@@ -383,17 +413,30 @@ class QuizEngine:
         第 3 批接 `scheduled_quiz_gc` 后由定时器调用，当前靠开局时懒清理。
         """
         if room is None:
+            rooms = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT room FROM quiz_round "
+                    "WHERE closed_at IS NULL AND expires_at <= ?",
+                    (now,),
+                )
+            ]
             cur = conn.execute(
                 "UPDATE quiz_round SET closed_at = expires_at WHERE closed_at IS NULL AND expires_at <= ?",
                 (now,),
             )
         else:
+            rooms = [room]
             cur = conn.execute(
                 "UPDATE quiz_round SET closed_at = expires_at "
                 "WHERE room = ? AND closed_at IS NULL AND expires_at <= ?",
                 (room, now),
             )
-        return int(cur.rowcount or 0)
+        closed = int(cur.rowcount or 0)
+        if closed:                            # 超时也算结束，槽位必须跟着让出来
+            for key in rooms:
+                release_slot(key, SLOT_OWNER)
+        return closed
 
     def sweep(self, conn, now: int | None = None) -> int:
         """供定时动作调用（§4.2 `quiz_gc`）。"""
@@ -418,12 +461,6 @@ class QuizEngine:
         except BankError:
             return None
         return bank.by_id(question_id)
-
-    def _busy_text(self, store, running: OpenRound) -> str:
-        question = self._question(store, running.category, running.question_id)
-        if question is None:
-            return "本群还有一题没答完，先把那题答了。"
-        return f"本群还有一题没答完：{question.q}"
 
     def _decorate(self, text: str, ctx, msg) -> str:
         """接龙冲突提醒：只探测插件是否激活，不读对方内部状态（§2.7）。"""

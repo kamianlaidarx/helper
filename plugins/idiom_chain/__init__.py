@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from wxbot_framework.game_slot import claim as claim_slot
+from wxbot_framework.game_slot import release as release_slot
 from wxbot_framework.llm import LLMError
 from wxbot_framework.members import SnapshotExpired
 from wxbot_framework.personality import PROMPTS, game_reply
@@ -13,6 +15,8 @@ from .judge import IdiomJudge
 HELP = ("1. 成语接龙\n\n2. 看图猜成语\n\n3. /绑定 昵称\n\n4. /总结 昵称\n\n5. /总结群聊\n\n"
         f"6. /切换人格 {'|'.join((*PROMPTS, '取消'))}\n\n"
         "7. 艾特机器人对话\n\n8. /查看音色\n\n9. /音色 名称|关闭\n\n10. /清空\n\n11. /来张图\n\n12. /help")
+
+SLOT_OWNER = "idiom_chain"   # 共享游戏槽里的署名；「结束」与「退出接龙」都会释放
 
 
 @dataclass
@@ -68,6 +72,8 @@ class Plugin:
         judge = IdiomJudge(ctx.llm_for(message, personality=personality))
         guard = lambda: ctx.personality_guard(personality)
         if self.session_id != message.session_id:
+            for room in tuple(self.games):
+                release_slot(room, SLOT_OWNER)
             self.games.clear()
             self.session_id = message.session_id
         if text == "/help":
@@ -76,23 +82,33 @@ class Plugin:
         game = self.games.get(message.chat_id)
         if text in ('看图猜成语', '/看图猜成语') and getattr(ctx, 'plugin_is_active', lambda name: False)('picture_idiom'):
             self.games.pop(message.chat_id, None)
+            release_slot(message.chat_id, SLOT_OWNER)
             return
-        if text == "退出接龙":
+        if text in ("退出接龙", "结束"):
             self.games.pop(message.chat_id, None)
-            ctx.reply(message, "已退出接龙。", delivery_guard=guard)
+            release_slot(message.chat_id, SLOT_OWNER)
+            ctx.reply(message, "已退出接龙。" if text == "退出接龙" else "接龙已结束。",
+                      delivery_guard=guard)
             return
         if text == "成语接龙":
             if game:
                 ctx.reply(message, game.latest.current, delivery_guard=guard)
                 return
+            busy = claim_slot(message.chat_id, SLOT_OWNER, label="成语接龙")
+            if busy is not None:
+                ctx.reply(message, f"本群还有一局{busy}没结束，先发「结束」。", delivery_guard=guard)
+                return
             try:
                 opening = judge.opening()
             except LLMError as error:
                 ctx.logger.warning("接龙开场失败：%s", error)
+                release_slot(message.chat_id, SLOT_OWNER)
                 ctx.reply(message, "暂时无法向大模型获取成语，请稍后再发“成语接龙”。", delivery_guard=guard)
                 return
             if ctx.reply(message, opening, delivery_guard=guard):
                 self.games[message.chat_id] = Game(opening, Chain(opening, (opening,), time.monotonic()))
+            else:
+                release_slot(message.chat_id, SLOT_OWNER)
             return
         if text == "合并接龙":
             if not game:

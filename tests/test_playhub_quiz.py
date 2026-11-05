@@ -24,6 +24,7 @@ from plugins.playhub.engines.quiz import (
     WIN_CAP_PER_DAY,
     QuizEngine,
 )
+from wxbot_framework import game_slot
 
 ROOM = "12345678@chatroom"
 UID = "wxid_player_a"
@@ -57,10 +58,10 @@ class FakeClock:
         self.ts += seconds
 
 
-def _quiz_rows(count: int, *, prefix: str = "题面") -> list[dict]:
+def _quiz_rows(count: int, *, prefix: str = "题面", category: str = "chengyu") -> list[dict]:
     return [
         {
-            "id": f"chengyu-{i:04d}",
+            "id": f"{category}-{i:04d}",
             "v": 1,
             "q": f"{prefix}{i}：一个用来测试的题目描述",
             "a": [f"答案{i}", f"别名{i}"],
@@ -99,6 +100,7 @@ class QuizTestBase(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.content = self.tmp / "content"          # = <db_path.parent>/content 覆盖层
         _write_jsonl(self.content / "chengyu.jsonl", _quiz_rows(30))
+        _write_jsonl(self.content / "animal.jsonl", _quiz_rows(30, prefix="动物题面", category="animal"))
         _write_jsonl(self.content / "diff.jsonl", _diff_rows(30))
 
         self.store = Store(self.tmp / "playhub.sqlite3", account="acct")
@@ -144,7 +146,8 @@ class QuizTestBase(unittest.TestCase):
 
     def answer_of(self, question_id: str) -> str:
         """从临时题库里按 id 取首个答案（题目都是本测试生成的）。"""
-        for row in _quiz_rows(30):
+        banks = _quiz_rows(30) + _quiz_rows(30, prefix="动物题面", category="animal")
+        for row in banks:
             if row["id"] == question_id:
                 return row["a"][0]
         raise AssertionError(f"未知题目 {question_id}")
@@ -167,11 +170,29 @@ class StartTests(QuizTestBase):
         self.assertNotIn(answer, row["answer_norm"])
         self.assertIn(hashlib.sha256(answer.encode()).hexdigest(), stored)
 
-    def test_second_start_reports_unfinished_round(self) -> None:
+    def test_second_start_closes_previous_round(self) -> None:
+        """开局不阻塞：新局开起来，上一局就地结束并在回包说明。"""
         self.say("猜成语")
-        reply = self.say("猜谜语")
+        first = self.open_row()
+        reply = self.say("猜动物")
         self.assertIsNotNone(reply)
-        self.assertIn("还有一题没答完", reply.text)
+        self.assertIn("上一局（猜成语）没答完，已结束", reply.text)
+        self.assertIn("【猜动物】", reply.text)
+
+        with self.store.tx(immediate=False) as conn:
+            closed = conn.execute(
+                "SELECT closed_at FROM quiz_round WHERE id = ?", (first["id"],)
+            ).fetchone()[0]
+        self.assertIsNotNone(closed)
+        self.assertEqual(self.open_row()["category"], "animal")
+
+    def test_missing_bank_keeps_current_round(self) -> None:
+        """题库没了不该顺手把正在进行的题关掉。"""
+        self.say("猜成语")
+        first = self.open_row()
+        reply = self.say("猜歌名")                 # chengyu/diff 之外的类目没题库
+        self.assertIn("题库还没准备好", reply.text)
+        self.assertEqual(self.open_row()["id"], first["id"])
 
     def test_missing_bank_is_reported(self) -> None:
         reply = self.say("猜歌名")          # 只有 chengyu/diff 两个题库
@@ -266,8 +287,32 @@ class AnswerTests(QuizTestBase):
 
 class SubcommandTests(QuizTestBase):
     def test_subcommands_silent_without_round(self) -> None:
-        for word in ("提示", "换一题", "公布答案", "退出猜成语"):
+        for word in ("提示", "换一题", "公布答案", "结束", "退出猜成语"):
             self.assertIsNone(self.say(word), word)
+
+    def test_end_word_closes_whatever_is_running(self) -> None:
+        """只有一个结束词「结束」，不按类目；回包要说清结束的是哪一局。"""
+        self.say("猜动物")
+        reply = self.say("结束")
+        self.assertIn("本局（猜动物）已结束", reply.text)
+        self.assertIsNone(self.open_row())
+
+        self.say("猜成语")
+        reply = self.say("结束")
+        self.assertIn("本局（猜成语）已结束", reply.text)
+        self.assertIsNone(self.open_row())
+
+    def test_other_exit_words_do_nothing(self) -> None:
+        """历史写法 `退出猜动物` 之类不再生效，避免「退出甲却退了乙」。"""
+        self.say("猜成语")
+        self.assertIsNone(self.say("退出猜动物"))
+        self.assertIsNotNone(self.open_row())
+
+    def test_end_word_works_for_diff(self) -> None:
+        self.say("找茬")
+        reply = self.say("结束")
+        self.assertIn("本局（文字找茬）已结束", reply.text)
+        self.assertIsNone(self.open_row())
 
     def test_hint_levels_then_reveal(self) -> None:
         self.say("猜成语")
@@ -294,8 +339,8 @@ class SubcommandTests(QuizTestBase):
 
     def test_quit_closes_round(self) -> None:
         self.say("猜成语")
-        reply = self.say("退出猜成语")
-        self.assertIn("本局已结束", reply.text)
+        reply = self.say("结束")
+        self.assertIn("本局（猜成语）已结束", reply.text)
         self.assertIsNone(self.open_row())
         self.assertEqual(self.coins(), 0)
 
@@ -380,6 +425,51 @@ class EngineUnitTests(unittest.TestCase):
         for action, binding in BINDINGS.items():
             if action.startswith("quiz."):
                 self.assertEqual(binding.engine, "quiz")
+
+
+class SlotTests(QuizTestBase):
+    """共享游戏槽：一个群同一时刻只允许一局，跨插件也一样（game_slot.py）。"""
+
+    def test_other_game_holding_the_slot_blocks_start(self) -> None:
+        game_slot.claim(ROOM, "idiom_chain", label="成语接龙")
+        reply = self.say("猜成语")
+        self.assertIn("本群还有一局成语接龙没结束", reply.text)
+        self.assertIsNone(self.open_row())
+
+    def test_start_takes_the_slot_with_its_label(self) -> None:
+        self.say("猜动物")
+        self.assertEqual(game_slot.holder(ROOM), "猜动物")
+        self.assertEqual(game_slot.holder_owner(ROOM), "playhub")
+
+    def test_end_releases_the_slot(self) -> None:
+        self.say("猜成语")
+        self.say("结束")
+        self.assertIsNone(game_slot.holder(ROOM))
+
+    def test_reveal_and_correct_answer_release_the_slot(self) -> None:
+        self.say("猜成语")
+        self.say("公布答案")
+        self.assertIsNone(game_slot.holder(ROOM))
+
+        self.say("猜成语")
+        row = self.open_row()
+        self.clock.advance()
+        self.say(self.answer_of(row["question_id"]))
+        self.assertIsNone(game_slot.holder(ROOM))
+
+    def test_next_question_keeps_the_slot(self) -> None:
+        self.say("猜成语")
+        self.say("换一题")
+        self.assertEqual(game_slot.holder(ROOM), "猜成语")
+
+    def test_sweep_releases_the_slot(self) -> None:
+        from plugins.playhub.engines.quiz import ROUND_SECONDS
+
+        self.say("猜成语")
+        self.clock.advance(ROUND_SECONDS + 1)
+        with self.store.tx() as conn:
+            self.assertEqual(self.app._engines["quiz"].sweep(conn, now=self.clock()), 1)
+        self.assertIsNone(game_slot.holder(ROOM))
 
 
 if __name__ == "__main__":
