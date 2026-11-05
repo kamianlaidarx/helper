@@ -7,10 +7,15 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-CN = ZoneInfo("Asia/Shanghai")
+try:
+    CN = ZoneInfo("Asia/Shanghai")
+except Exception:  # ZoneInfoNotFoundError：Windows 上 zoneinfo 依赖 tzdata 包
+    # 退化到固定 +08:00。中国自 1991 年起不实行夏令时，与 Asia/Shanghai 等价，
+    # 日切/周切结果完全一致，只是少了历史时区数据（本插件只处理当前时刻）。
+    CN = timezone(timedelta(hours=8), "CST")
 
 
 def now_ts() -> int:
