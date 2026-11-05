@@ -107,7 +107,9 @@ class Plugin:
                 game.shared = Chain(current.current, current.used, time.monotonic())
                 game.players.clear()
             return
-        if not game or not text or text.startswith("/"):
+        # 只判定四字中文：非四字（包括其它插件注册的关键词，如“签到”“帮助”）一律不响应，
+        # 否则接龙进行中每条群聊都会被回一句“请输入一个完整的四字成语”。
+        if not game or not text or text.startswith("/") or not FOUR_CHINESE.fullmatch(text):
             return
         if game.mode == "merged":
             chain = game.shared

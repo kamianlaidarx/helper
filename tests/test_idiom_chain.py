@@ -98,6 +98,14 @@ class IdiomPluginTests(unittest.TestCase):
         self.assertEqual(self.plugin.games[ROOM].players[A].current, "一心一意")
         self.assertIn("接龙失败", self.ctx.sent[-1][1])
 
+    def test_non_idiom_words_are_ignored_during_chain(self):
+        # 接龙进行中，其它插件的关键词不能被吞成一句“请输入一个完整的四字成语”。
+        self.start()
+        for text in ("签到", "帮助", "榜单", "抽签", "ok", "一二三四五"):
+            self.send(text)
+        self.assertEqual(len(self.ctx.sent), 1)
+        self.assertEqual(self.plugin.games[ROOM].opening, "一心一意")
+
     def test_merged_mode_uses_latest_word_and_only_first_received_answer(self):
         self.start()
         self.send("意气风发")
