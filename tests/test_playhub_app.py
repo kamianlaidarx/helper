@@ -300,8 +300,9 @@ class AppSilentPathTest(StoreCase):
                 self.assertQuiet(text)
 
     def test_unbound_action(self):
-        # 点歌/点唱 是 needs_arg+guide，但 music.request 不在本批 BINDINGS 里。
-        for text in ("点歌", "点歌 晴天", "点唱", "猜成语"):
+        # 点歌/点唱 是 needs_arg+guide，但 music.request 不在当前批次 BINDINGS 里。
+        # 第 2 批已绑 13 个 quiz 动作，`猜成语` 不再是"未绑定"的例子。
+        for text in ("点歌", "点歌 晴天", "点唱", "天气 北京"):
             with self.subTest(text=text):
                 self.assertQuiet(text)
 
@@ -465,14 +466,17 @@ class InvariantI1Test(StoreCase):
 class HelpTextTest(unittest.TestCase):
     """§7：帮助只列本批可用的三个动作，并给出后续批次与已知限制说明。"""
 
-    def test_lists_only_this_batch(self):
+    def test_lists_current_features(self):
         text = help_text()
         self.assertEqual(text, HELP_TEXT)
         for word in ("签到", "打卡", "抽签", "求签", "排行榜", "榜单"):
             self.assertIn(word, text)
+        # 第 2 批已接线的竞猜词必须出现在帮助里
+        for word in ("猜成语", "找茬", "问答", "提示", "公布答案", "换一题", "退出猜成语"):
+            self.assertIn(word, text)
         self.assertIn("其余玩法将在后续批次开放", text)
-        # 未开放玩法不得出现在帮助里
-        for word in ("点歌", "结婚", "宝宝", "纳妾", "闺蜜", "结拜", "猜成语"):
+        # 仍未开放的玩法不得出现在帮助里
+        for word in ("点歌", "结婚", "宝宝", "纳妾", "闺蜜", "结拜"):
             self.assertNotIn(word, text)
 
     def test_keeps_known_limitation(self):

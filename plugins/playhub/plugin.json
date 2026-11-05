@@ -1,6 +1,6 @@
 {
   "api": "v1",
-  "description": "群内小游戏中心：签到、抽签、金币榜、帮助；SQLite 单账号存档",
+  "description": "群内小游戏中心：签到、抽签、金币榜、13 类猜题抢答、帮助；SQLite 单账号存档",
   "requires": [
     "group.text.receive"
   ],

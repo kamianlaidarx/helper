@@ -1303,9 +1303,12 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | `签到` | `30 + 5 × min(连签天数-1, 10)`，即 30 → 80 封顶 | 每日 1 次 |
 | `抽签` | 见下方签等表，0–30 | 每日 1 次 |
 | `开宝箱` | 铜 50 / 银 150 / 金 400 | 按箱型 |
+| 竞猜答对 | 10（本题已用过提示则 5） | 每日最多 10 次，即 ≤100/日 |
 | 群内发言 | **不产金币** | — |
 
 群内发言**明确不给币**：发言给币会奖励刷屏，且与活跃榜重复计功（活跃榜已经按消息数排名）。
+
+**竞猜奖励为什么是 10/5 且封日上限**（第 2 批补，原表漏写）：答对一次 = 两个签等的量级，与「每日 1 次」的签到、抽签相比略高，因为抢答要求群里有第二个人参与、不是单人可刷；用 `提示` 后减半，避免"先点提示再答"白拿。日上限按**答对次数**（`daily_counter` 的 `quiz_win` 键）而非金币累计，`每日 10 次 × 10 金币 = 100`，与签到 80 同量级，不至于让一个人搬空金币池。**竞猜不发钻石**：钻石产出总账（≈5.5 钻/周）不为它改动；金币 sink 仍是度蜜月 520 / 离婚 200 / 礼物（§9 待定价格），本项不新增 sink。
 
 **抽签签等表（12 份概率）**
 
@@ -1548,6 +1551,8 @@ def resolve_workspace(ctx, msg) -> Path:
 ### 第 2 批：竞猜引擎 + 题库管线（12 人日）
 
 范围：`engines/quiz`、`engines/base`、`content/*`、`content/playhub/*.jsonl` 首批 11 类目各 100 题、`quiz_round/quiz_stat/quiz_attempt` 迁移、`daily_quiz`/`quiz_gc` 定时动作。约 9 个文件 + 题库。
+
+实现进度（2026-11-05）：`content/loader.py`、`engines/quiz.py`、`registry` 13 条绑定、`app._plain_text` 纯文本通路与 `tests/test_playhub_quiz.py`（22 例）已落地并通过；题库为 13 类 × 30 题（样例量，非下表 100 题/类）。**未落地**：`engines/base`（改用 `engines/__init__.py` 的 `Reply`/`GameRuntime`，不单建文件）、`daily_quiz`/`quiz_gc` 两个定时动作（`sweep()` 已公开，接线在批 4）、题库扩量。
 
 验收标准：
 

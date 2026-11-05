@@ -99,9 +99,12 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
     子模块又要 `from . import Reply`，顶层 import 会形成循环。
     """
     from .daily import DailyEngine
+    from .quiz import QuizEngine
     from .ranking import RankingEngine
 
     return {
         "daily": DailyEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
         "ranking": RankingEngine(now_fn=now_fn),
+        # 第 2 批：竞猜/找茬/问答共用这一个引擎（§4 第 10 条）
+        "quiz": QuizEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
     }

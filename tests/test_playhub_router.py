@@ -244,13 +244,13 @@ class FakeEngine:
 class BindingCase(unittest.TestCase):
     """绑定表只有 4 个动作（第 1 批 3 个玩法 + `帮助`）；未绑定动作静默；加载期自检可构造缺绑定。"""
 
-    def test_only_three_bound_actions(self):
-        self.assertEqual(
-            set(BINDINGS), {"daily.signin", "daily.fortune", "ranking.top", "business.help"}
-        )
-        self.assertEqual(len(BINDINGS), 4)
-        for binding in BINDINGS.values():
-            self.assertEqual(binding.batch, 1)
+    def test_bound_actions_match_batches(self):
+        batch1 = {"daily.signin", "daily.fortune", "ranking.top", "business.help"}
+        batch2 = {action for action in ACTION_PLAN if action.startswith("quiz.")}
+        self.assertEqual(set(BINDINGS), batch1 | batch2)
+        self.assertEqual(len(BINDINGS), len(batch1) + 13)
+        for action, binding in BINDINGS.items():
+            self.assertEqual(binding.batch, ACTION_PLAN[action], action)
 
     def test_action_plan_covers_every_keyword_action(self):
         self.assertEqual(set(ACTION_PLAN), {t.action for t in TRIGGERS})
@@ -258,13 +258,14 @@ class BindingCase(unittest.TestCase):
         self.assertEqual(ACTION_PLAN["social.marry"], None)
 
     def test_check_bindings_passes(self):
-        self.assertEqual(check_bindings(), 4)
+        self.assertEqual(check_bindings(), len(BINDINGS))
 
-    def test_missing_daily_fortune_raises(self):
-        partial = {k: v for k, v in BINDINGS.items() if k != "daily.fortune"}
+    def test_missing_current_batch_action_raises(self):
+        # 只要求"当前批次"的动作必须绑定：第 2 批是 quiz.trivia，删掉它就报错。
+        partial = {k: v for k, v in BINDINGS.items() if k != "quiz.trivia"}
         with self.assertRaises(BindingError) as ctx:
             check_bindings(bindings=partial)
-        self.assertIn("daily.fortune", str(ctx.exception))
+        self.assertIn("quiz.trivia", str(ctx.exception))
 
     def test_strict_mode_rejects_every_unbound(self):
         with self.assertRaises(BindingError) as ctx:

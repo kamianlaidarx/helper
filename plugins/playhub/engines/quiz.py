@@ -1,0 +1,438 @@
+"""`quiz` 引擎：11 类竞猜 + 文字找茬 + 趣味问答，共用一张 `quiz_round`
+（`docs/design/playhub.md:438-446` 引擎协议、`:1548-1559` 第 2 批验收、§5.4 题库管线）。
+
+设计上的四个要点，改代码前先读：
+
+1. **答案不存明文**：`quiz_round.answer_norm` 存 JSON 数组形式的 sha256
+   （一条题可以有多个等价答案）。公布答案时才按 `question_id` 回题库取明文，
+   所以 `quiz_round` 泄露也看不到答案。
+2. **子命令复用框架词**：`提示`/`换一题`/`公布答案`/`退出猜成语` 是框架
+   `GROUP_CONTROL_COMMANDS` 里的词（`wxbot_framework/text.py:8-9`），playhub
+   **不注册**它们；只有本群存在未结束对局时才消费，否则立刻返回、绝不回包。
+3. **关键词优先于纯文本**：`app.handle_message` 先 `route()`，命中命令就不再进
+   `on_plain_text`（`:577`）。所以 `签到` 不会被当成答案，抢答也不会吃掉 61 个关键词。
+4. **违规与错答一律静默**：错答不回复（群聊里"不对"刷屏比冷场更烦），
+   只落 `quiz_attempt` 一行；`Reply` 只在答对 / 用子命令时构造，且一律在 COMMIT 之后。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import random
+from dataclasses import dataclass
+from typing import Any
+
+from ..content.loader import Bank, BankError, load_bank
+from ..content.validate import normalize
+from ..core import clock, credit, ensure_player
+from ..core.errors import DuplicatePosting
+from . import Reply, msg_nickname, msg_room, msg_uid, store_of
+
+# action → 题库类目。键必须与 keywords.py 的 action 逐字一致。
+CATEGORY_BY_ACTION: dict[str, str] = {
+    "quiz.chengyu": "chengyu",
+    "quiz.song": "song",
+    "quiz.riddle": "riddle",
+    "quiz.movie": "movie",
+    "quiz.star": "star",
+    "quiz.animal": "animal",
+    "quiz.plant": "plant",
+    "quiz.food": "food",
+    "quiz.honor": "honor",
+    "quiz.anime": "anime",
+    "quiz.guoman": "guoman",
+    "quiz.diff": "diff",
+    "quiz.trivia": "trivia",
+}
+
+CATEGORY_LABEL: dict[str, str] = {
+    "chengyu": "猜成语",
+    "song": "猜歌名",
+    "riddle": "猜谜语",
+    "movie": "猜电影",
+    "star": "猜明星",
+    "animal": "猜动物",
+    "plant": "猜植物",
+    "food": "猜美食",
+    "honor": "猜王者",
+    "anime": "猜动漫",
+    "guoman": "猜国漫",
+    "diff": "文字找茬",
+    "trivia": "趣味问答",
+}
+
+# 框架控制词：只在有未结束对局时消费（见文件头第 2 条）。
+SUBCOMMANDS = frozenset({"提示", "换一题", "公布答案", "退出猜成语"})
+
+ROUND_SECONDS = 300              # 单题时限；quiz_gc 的默认值与此对齐
+RECENT_ROUNDS = 50               # 同群近 N 题不重复（:1442）
+RECENT_DAYS = 7                  # 7 天内出过的题不再出
+MAX_ATTEMPTS_PER_ROUND = 200     # 单局作答上限，防刷屏
+ATTEMPT_TEXT_MAX = 64            # 与 quiz_attempt.text 的列宽约定一致
+
+# 奖励：§4.4 数值表原先没有竞猜项（已在文档补记）。取值口径是「一天答对
+# 10 题 ≈ 一次签到」，有提示时减半，避免提示沦为免费答案。
+COIN_CORRECT = 10
+COIN_CORRECT_HINTED = 5
+WIN_CAP_PER_DAY = 10
+WIN_KEY = "quiz_win"
+COIN_REASON = "quiz_win"
+
+_IDIOM_HINT = "\n（本群开着成语接龙，抢答可能被接龙判定先吃掉；建议先发「退出接龙」。）"
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _hashes_for(question: Any) -> str:
+    """把可接受答案编成 JSON 数组（每项一个 sha256），落 `answer_norm`。"""
+    hashes = sorted({_sha(n) for n in question.accepted})
+    return json.dumps(hashes)
+
+
+def _load_hashes(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, str) or not raw:
+        return ()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ()
+    if not isinstance(data, list):
+        return ()
+    return tuple(h for h in data if isinstance(h, str))
+
+
+@dataclass(frozen=True)
+class OpenRound:
+    id: int
+    category: str
+    question_id: str
+    answer_norm: str
+    hint_level: int
+    expires_at: int
+    attempts: int
+
+
+_OPEN_SQL = """
+SELECT id, category, question_id, answer_norm, hint_level, expires_at, attempts
+FROM quiz_round WHERE room = ? AND closed_at IS NULL
+"""
+
+
+def _row_to_round(row) -> OpenRound | None:
+    if row is None:
+        return None
+    return OpenRound(
+        id=int(row[0]),
+        category=row[1],
+        question_id=row[2],
+        answer_norm=row[3],
+        hint_level=int(row[4]),
+        expires_at=int(row[5]),
+        attempts=int(row[6]),
+    )
+
+
+def _counter_used(conn, *, room: str, uid: str, day: str, key: str) -> int:
+    row = conn.execute(
+        "SELECT used FROM daily_counter WHERE room = ? AND uid = ? AND day = ? AND key = ?",
+        (room, uid, day, key),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _counter_consume(conn, *, room: str, uid: str, day: str, key: str, cap: int, now: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO daily_counter (room, uid, day, key, used, cap, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(room, uid, day, key)
+        DO UPDATE SET used = used + 1, cap = excluded.cap, updated_at = excluded.updated_at
+        """,
+        (room, uid, day, key, cap, now),
+    )
+
+
+class QuizEngine:
+    """`quiz` 引擎。随机源与时钟都必须可注入，测试才不会随机翻车。"""
+
+    name = "quiz"
+
+    def __init__(self, *, rng=None, now_fn=None, repo_root=None, logger=None):
+        self._rng = rng if rng is not None else random.Random()
+        self._now = now_fn if now_fn is not None else clock.now_ts
+        self._repo_root = repo_root
+        self._log = logger if logger is not None else logging.getLogger("playhub.engines.quiz")
+
+    # -- 分发 ---------------------------------------------------------------
+    def on_command(self, cmd, msg=None, ctx=None, game=None) -> Reply | None:
+        category = CATEGORY_BY_ACTION.get(getattr(cmd, "action", ""))
+        if category is None:
+            return None
+        return self.start(msg, ctx, game, category)
+
+    def on_plain_text(self, msg, ctx=None, game=None) -> Reply | None:
+        """非关键词文本入口：只在本群有未结束对局时消费（见文件头第 2/3 条）。"""
+        room, uid = msg_room(msg), msg_uid(msg)
+        if not room or not uid:
+            return None
+        text = getattr(msg, "text", "") or ""
+        text = text.strip()
+        if not text:
+            return None
+
+        store = store_of(game)
+        now = int(self._now())
+        current = self._read_open(store, room)
+        if current is None or current.expires_at <= now:
+            return None                      # 没有对局 / 已超时：什么都不做
+
+        if text in SUBCOMMANDS:
+            return self._subcommand(store, msg, ctx, room, uid, text, now)
+        return self._judge(store, msg, room, uid, text, now)
+
+    # -- 开局 ---------------------------------------------------------------
+    def start(self, msg, ctx=None, game=None, category: str | None = None) -> Reply | None:
+        if category is None:
+            return None
+        room, uid = msg_room(msg), msg_uid(msg)
+        if not room or not uid:
+            return None
+        store = store_of(game)
+        now = int(self._now())
+        label = CATEGORY_LABEL.get(category, category)
+
+        # 先看有没有没答完的题：它比「这个类目题库没好」更该先说，也省一次读盘。
+        running = self._read_open(store, room)
+        if running is not None and running.expires_at > now:
+            return Reply(self._busy_text(store, running), f"quiz.{category}")
+
+        try:
+            bank = self._bank(store, category)
+        except BankError as exc:
+            self._log.warning("题库不可用：category=%s reason=%s", category, exc.reason)
+            return Reply(f"「{label}」的题库还没准备好，回头再试试。", f"quiz.{category}")
+
+        with store.tx() as conn:
+            self._sweep(conn, now, room=room)
+            running = _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
+            if running is not None:              # 上面那次读之后被别的消息抢先开局
+                return Reply(self._busy_text(store, running), f"quiz.{category}")
+            question = self._pick(conn, bank, room, now)
+            text = self._open_round(conn, room, category, bank, question, now)
+        return Reply(self._decorate(text, ctx, msg), f"quiz.{category}")
+
+    # -- 抢答 ---------------------------------------------------------------
+    def _judge(self, store, msg, room: str, uid: str, text: str, now: int) -> Reply | None:
+        with store.tx() as conn:
+            current = _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
+            if current is None or current.expires_at <= now:
+                return None
+            if current.attempts >= MAX_ATTEMPTS_PER_ROUND:
+                return None
+            hashes = _load_hashes(current.answer_norm)
+            norm = normalize(text)           # 与题库同一套归一化（全角/标点/大小写）
+            hit = bool(norm) and bool(hashes) and _sha(norm) in hashes
+
+            conn.execute(
+                "INSERT INTO quiz_attempt (round_id, uid, text, hit, at) VALUES (?, ?, ?, ?, ?)",
+                (current.id, uid, text[:ATTEMPT_TEXT_MAX], 1 if hit else 0, now),
+            )
+            conn.execute(
+                "UPDATE quiz_round SET attempts = attempts + 1 WHERE id = ?", (current.id,)
+            )
+            if not hit:
+                return None                  # 错答静默：只留流水
+
+            closed = conn.execute(
+                "UPDATE quiz_round SET closed_at = ?, winner_uid = ? WHERE id = ? AND closed_at IS NULL",
+                (now, uid, current.id),
+            ).rowcount
+            if not closed:                   # 并发下已被别人收题
+                return None
+            conn.execute(
+                "UPDATE quiz_stat SET correct = correct + 1 WHERE question_id = ?",
+                (current.question_id,),
+            )
+
+            question = self._question(store, current.category, current.question_id)
+            answer = question.display if question is not None else "（题库缺失）"
+            coin = self._payout(conn, room=room, uid=uid, msg=msg, now=now,
+                                round_id=current.id, hinted=current.hint_level > 0)
+
+        who = msg_nickname(msg) or "有人"
+        suffix = f"，+{coin} 金币" if coin else "（今天的答题奖励已领满）"
+        return Reply(f"🎉 {who} 答对了，答案是「{answer}」{suffix}", f"quiz.{current.category}")
+
+    # -- 子命令 -------------------------------------------------------------
+    def _subcommand(self, store, msg, ctx, room: str, uid: str, text: str, now: int) -> Reply | None:
+        with store.tx() as conn:
+            current = _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
+            if current is None or current.expires_at <= now:
+                return None
+            question = self._question(store, current.category, current.question_id)
+
+            if text == "提示":
+                hints = question.hints if question is not None else ()
+                if current.hint_level >= len(hints):
+                    return Reply("这题的提示已经给完了，可以发「公布答案」。", "quiz.hint")
+                level = current.hint_level + 1
+                conn.execute("UPDATE quiz_round SET hint_level = ? WHERE id = ?", (level, current.id))
+                return Reply(
+                    f"提示 {level}/{len(hints)}：{hints[level - 1]}", "quiz.hint"
+                )
+
+            answer = question.display if question is not None else "（题库缺失）"
+            conn.execute(
+                "UPDATE quiz_round SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
+                (now, current.id),
+            )
+            if text == "公布答案":
+                return Reply(
+                    f"答案是「{answer}」。本题共 {current.attempts} 次作答。", "quiz.reveal"
+                )
+            if text == "退出猜成语":
+                return Reply(f"本局已结束，答案是「{answer}」。", "quiz.quit")
+
+            # 换一题：同一类目再开一局
+            try:
+                bank = self._bank(store, current.category)
+            except BankError:
+                return Reply(f"本局已结束，答案是「{answer}」。", "quiz.next")
+            question = self._pick(conn, bank, room, now)
+            text_new = self._open_round(conn, room, current.category, bank, question, now)
+        return Reply(self._decorate("换一题：\n" + text_new, ctx, msg), "quiz.next")
+
+    # -- 出题 / 选题 ---------------------------------------------------------
+    def _pick(self, conn, bank: Bank, room: str, now: int):
+        recent = {
+            row[0]
+            for row in conn.execute(
+                "SELECT question_id FROM quiz_round WHERE room = ? ORDER BY id DESC LIMIT ?",
+                (room, RECENT_ROUNDS),
+            )
+        }
+        stale = {
+            row[0]
+            for row in conn.execute(
+                "SELECT question_id FROM quiz_stat WHERE last_at IS NOT NULL AND last_at > ?",
+                (now - RECENT_DAYS * 86400,),
+            )
+        }
+        candidates = [q for q in bank.questions if q.accepted]
+        pool = [q for q in candidates if q.id not in recent and q.id not in stale]
+        if not pool:
+            pool = [q for q in candidates if q.id not in recent] or candidates
+        return self._rng.choice(pool)
+
+    def _open_round(self, conn, room: str, category: str, bank: Bank, question: Any, now: int) -> str:
+        conn.execute(
+            """
+            INSERT INTO quiz_round
+                (room, category, question_id, answer_norm, hint_level, started_at, expires_at, attempts)
+            VALUES (?, ?, ?, ?, 0, ?, ?, 0)
+            """,
+            (room, category, question.id, _hashes_for(question), now, now + ROUND_SECONDS),
+        )
+        conn.execute(
+            """
+            INSERT INTO quiz_stat (question_id, category, shown, correct, last_at)
+            VALUES (?, ?, 1, 0, ?)
+            ON CONFLICT(question_id)
+            DO UPDATE SET shown = shown + 1, last_at = excluded.last_at
+            """,
+            (question.id, category, now),
+        )
+        label = CATEGORY_LABEL.get(category, category)
+        if category == "diff":
+            return f"【{label}】\n{question.q}\n\n直接发不一样的那个词。"
+        return f"【{label}】{question.q}\n\n直接发答案抢答；「提示」看提示，「公布答案」看答案。"
+
+    # -- 奖励 ---------------------------------------------------------------
+    def _payout(self, conn, *, room: str, uid: str, msg, now: int, round_id: int, hinted: bool) -> int:
+        """答题奖励；达日上限返回 0（答对仍成立，只是不发币）。"""
+        day = clock.day_of(now)
+        if _counter_used(conn, room=room, uid=uid, day=day, key=WIN_KEY) >= WIN_CAP_PER_DAY:
+            return 0
+        coin = COIN_CORRECT_HINTED if hinted else COIN_CORRECT
+        ensure_player(conn, room=room, uid=uid, nickname=msg_nickname(msg) or None, now=now)
+        try:
+            credit(
+                conn,
+                room=room,
+                uid=uid,
+                currency="coin",
+                amount=coin,
+                reason=COIN_REASON,
+                operation_key=f"quiz:{round_id}",
+                posting_no=0,
+                now=now,
+            )
+        except DuplicatePosting:             # 同一局重放：钱已发过，不再计次
+            self._log.warning("答题奖励重复流水被拦截：room=%s round=%s", room, round_id)
+            return 0
+        _counter_consume(conn, room=room, uid=uid, day=day, key=WIN_KEY, cap=WIN_CAP_PER_DAY, now=now)
+        return coin
+
+    # -- 超时收题 -----------------------------------------------------------
+    def _sweep(self, conn, now: int, *, room: str | None = None) -> int:
+        """把超时未结束的对局标记为结束；返回收掉的条数。
+
+        第 3 批接 `scheduled_quiz_gc` 后由定时器调用，当前靠开局时懒清理。
+        """
+        if room is None:
+            cur = conn.execute(
+                "UPDATE quiz_round SET closed_at = expires_at WHERE closed_at IS NULL AND expires_at <= ?",
+                (now,),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE quiz_round SET closed_at = expires_at "
+                "WHERE room = ? AND closed_at IS NULL AND expires_at <= ?",
+                (room, now),
+            )
+        return int(cur.rowcount or 0)
+
+    def sweep(self, conn, now: int | None = None) -> int:
+        """供定时动作调用（§4.2 `quiz_gc`）。"""
+        return self._sweep(conn, int(self._now()) if now is None else now)
+
+    # -- 工具 ---------------------------------------------------------------
+    def _read_open(self, store, room: str) -> OpenRound | None:
+        """读一条未结束对局；读失败按「没有对局」处理（不能因坏库把群聊卡住）。"""
+        try:
+            with store.tx(immediate=False) as conn:
+                return _row_to_round(conn.execute(_OPEN_SQL, (room,)).fetchone())
+        except Exception:
+            self._log.exception("读取竞猜对局失败：room=%s", room)
+            return None
+
+    def _bank(self, store, category: str) -> Bank:
+        return load_bank(store, category, repo_root=self._repo_root)
+
+    def _question(self, store, category: str, question_id: str):
+        try:
+            bank = self._bank(store, category)
+        except BankError:
+            return None
+        return bank.by_id(question_id)
+
+    def _busy_text(self, store, running: OpenRound) -> str:
+        question = self._question(store, running.category, running.question_id)
+        if question is None:
+            return "本群还有一题没答完，先把那题答了。"
+        return f"本群还有一题没答完：{question.q}"
+
+    def _decorate(self, text: str, ctx, msg) -> str:
+        """接龙冲突提醒：只探测插件是否激活，不读对方内部状态（§2.7）。"""
+        active = getattr(ctx, "plugin_is_active", None) if ctx is not None else None
+        if not callable(active):
+            return text
+        try:
+            if active("idiom_chain"):
+                return text + _IDIOM_HINT
+        except Exception:
+            return text
+        return text

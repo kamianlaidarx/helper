@@ -10,6 +10,9 @@
 3. **零噪音**：非关键词、未绑定动作、`bare_behavior="silent"` 的裸触发、功能开关关闭，
    一律 `return None`——不回复、不写日志、不写审计。
 
+第 2 批在 `route()` 返回 `None` 之后接了一条**纯文本通路**（`_plain_text`），
+供竞猜抢答使用：代价是一条按 `quiz_one_open` 索引的读查询，命中不了对局就立即返回。
+
 事务顺序由引擎保证：`BEGIN IMMEDIATE` → 校验 → 发币/改状态 → 流水 → `COMMIT` → 构造 `Reply`。
 """
 from __future__ import annotations
@@ -26,10 +29,14 @@ from .router import route
 # business.py 落地后整段搬走，`help_text()` 改为读网页配置即可。
 HELP_TEXT = "\n".join(
     (
-        "playhub 当前可用（第 1 批）：",
+        "playhub 当前可用：",
         "· 签到（别名 打卡）：每天一次，得金币；连签越久给得越多",
         "· 抽签（别名 求签）：每天一次，得金币，上上签另加钻石",
         "· 排行榜（别名 榜单）：金币榜前 10 名",
+        "· 出题抢答：猜成语 / 猜歌名 / 猜谜语 / 猜电影 / 猜明星 / 猜动物 /",
+        "  猜植物 / 猜美食 / 猜王者 / 猜动漫 / 猜国漫 / 找茬 / 问答",
+        "  发一个词就出一题，直接发答案抢答；「提示」看提示，「公布答案」看答案，",
+        "  「换一题」换一题，「退出猜成语」结束本局",
         "· 帮助：就是本条，随时可以再看",
         "其余玩法将在后续批次开放。",
         "命令前后不加标点，直接发词即可。",
@@ -82,7 +89,8 @@ class App:
         # 这里不重复归一化，避免两次归一化口径不一致。
         cmd = route(text)
         if cmd is None:
-            return None
+            # 关键词优先（§2.6 第 6 条）：没命中任何关键词才可能是竞猜抢答的答案。
+            return self._plain_text(ctx, msg)
 
         trigger = TABLE.trigger(cmd.name)
         if trigger is None:                     # 理论上 route 已保证命中，防御性返回
@@ -116,6 +124,34 @@ class App:
             )
             return Reply(ERROR_TEXT, cmd.action)
         return reply
+
+    # -- 纯文本入口（竞猜抢答 + 四个框架子命令词）---------------------------
+    def _plain_text(self, ctx, msg) -> Reply | None:
+        """关键词没命中时的第二条通路，第 2 批只有 `quiz` 引擎会用。
+
+        三条约束：
+        - 引擎自己判断「本群有没有未结束对局」，没有就立刻返回，不回任何东西；
+        - 错答/闲聊静默，异常也**不回** `ERROR_TEXT`——群里每句闲聊都冒一句"出错"
+          比不实现更糟；
+        - 与命令分支共用 `feature.quiz` 开关。
+        """
+        engine = self._engines.get("quiz")
+        if engine is None:
+            return None
+        handler = getattr(engine, "on_plain_text", None)
+        if not callable(handler):
+            return None
+        if self._feature_off("quiz", msg):
+            return None
+        try:
+            return handler(msg, ctx, self._game)
+        except Exception:
+            self._log.exception(
+                "纯文本处理异常：room=%s uid=%s",
+                getattr(msg, "chat_id", ""),
+                getattr(msg, "sender_id", ""),
+            )
+            return None
 
     # -- 功能开关（kv: feature.<engine>）-------------------------------------
     def _feature_off(self, engine: str, msg) -> bool:

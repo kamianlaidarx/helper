@@ -1,8 +1,8 @@
 """playhub 动作绑定表 + 加载期自检 + dispatch（`docs/design/playhub.md:578`、`§7 第 1 批`）。
 
-本批只绑 3 个动作：`daily.signin` / `daily.fortune` / `ranking.top`。
-其余 39 个动作在 `ACTION_PLAN` 里标注所属批次（本批为 `1`，未排期为 `None`），
-但**不进** `BINDINGS`。
+本批（第 2 批）在原有 4 个动作之外，把 13 个竞猜动作全部绑到 `quiz` 引擎：
+`quiz.chengyu` / `song` / `riddle` / `movie` / `star` / `animal` / `plant` / `food`
+/ `honor` / `anime` / `guoman` / `diff` / `trivia`。
 
 未绑定的 action 一律静默 `return None`：不回「未开放」、不抛异常、不写日志噪音
 —— 与「关键词未命中」对外表现完全一致。
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from .keywords import TRIGGERS, Trigger
 
-CURRENT_BATCH = 1
+CURRENT_BATCH = 2
 
 
 class BindingError(Exception):
@@ -36,7 +36,8 @@ class Binding:
 
 
 # ---------------------------------------------------------------------------
-# 绑定表：本批**只有 3 个动作**。新增绑定必须同时改这里与 ACTION_PLAN。
+# 绑定表：第 1 批 4 个动作 + 第 2 批 13 个竞猜动作。
+# 新增绑定必须同时改这里与 ACTION_PLAN，否则导入即自检失败。
 # ---------------------------------------------------------------------------
 BINDINGS: dict[str, Binding] = {
     "daily.signin": Binding("daily.signin", "daily", 1),
@@ -44,6 +45,20 @@ BINDINGS: dict[str, Binding] = {
     "ranking.top": Binding("ranking.top", "ranking", 1),
     # 帮助：不经引擎，由 app 直接回包（见 app.HELP_TEXT）。
     "business.help": Binding("business.help", "business", 1),
+    # 第 2 批：13 个类目共用一个 quiz 引擎、一张 quiz_round 表。
+    "quiz.chengyu": Binding("quiz.chengyu", "quiz", 2),
+    "quiz.song": Binding("quiz.song", "quiz", 2),
+    "quiz.riddle": Binding("quiz.riddle", "quiz", 2),
+    "quiz.movie": Binding("quiz.movie", "quiz", 2),
+    "quiz.star": Binding("quiz.star", "quiz", 2),
+    "quiz.animal": Binding("quiz.animal", "quiz", 2),
+    "quiz.plant": Binding("quiz.plant", "quiz", 2),
+    "quiz.food": Binding("quiz.food", "quiz", 2),
+    "quiz.honor": Binding("quiz.honor", "quiz", 2),
+    "quiz.anime": Binding("quiz.anime", "quiz", 2),
+    "quiz.guoman": Binding("quiz.guoman", "quiz", 2),
+    "quiz.diff": Binding("quiz.diff", "quiz", 2),
+    "quiz.trivia": Binding("quiz.trivia", "quiz", 2),
 }
 
 # ---------------------------------------------------------------------------
@@ -71,25 +86,25 @@ ACTION_PLAN: dict[str, int | None] = {
     "lottery.blindbox": None,
     "lounge.copy": None,
     "ranking.activity": None,
-    "quiz.chengyu": None,
-    "quiz.song": None,
-    "quiz.riddle": None,
-    "quiz.movie": None,
-    "quiz.star": None,
-    "quiz.animal": None,
-    "quiz.plant": None,
-    "quiz.food": None,
-    "quiz.honor": None,
-    "quiz.anime": None,
-    "quiz.guoman": None,
+    "quiz.chengyu": 2,
+    "quiz.song": 2,
+    "quiz.riddle": 2,
+    "quiz.movie": 2,
+    "quiz.star": 2,
+    "quiz.animal": 2,
+    "quiz.plant": 2,
+    "quiz.food": 2,
+    "quiz.honor": 2,
+    "quiz.anime": 2,
+    "quiz.guoman": 2,
     "social.card": None,
     "daily.wealth": None,
     "moderation.jail": None,
     "moderation.block": None,
     "lottery.chest": None,
     "lounge.space": None,
-    "quiz.diff": None,
-    "quiz.trivia": None,
+    "quiz.diff": 2,
+    "quiz.trivia": 2,
     "groupstat.dive": None,
     "groupstat.invite": None,
     "groupstat.rename": None,
