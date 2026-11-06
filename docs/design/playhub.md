@@ -1429,7 +1429,7 @@ def is_due_weekly(last: str | None, this_week: str, local_wd_hm: tuple[int, int,
 
 #### 4.2.7 停线程、异常与日志（问题 F）
 
-- `on_unload`：`self._scheduler.stop()` → `stopped.set()` 后 `join(10)`；超时只记 warning（线程是 daemon，进程退出时不会卡住）。线程在每个群、每批删除之间检查 `stopped.is_set()`，最长退出时间约为一个小事务 + 一次 `send_text` 的文本等待。后台连接由线程自己在 `finally` 里关闭，`on_unload` 不碰它。框架在插件线程退出时调用 `on_unload`（`wxbot_framework/plugins.py:110-111`）；热重载期间新旧两份实例可能短暂各有一个后台线程，所有写都幂等，最多重复一次无害的读。
+- `on_unload`：`self._scheduler.stop()` → `stopped.set()` 后 `join(10)`；超时只记 warning（线程是 daemon，进程退出时不会卡住）。线程在每个群、每批删除、每份合同、每个补发日之间检查 `stopped.is_set()`；被打断时不写 `sched.last.*`（`sched.last.salary`、`sched.last.purge` 都只在**跑完**时写），剩下的留给下一次启动——已发过的工资会撞幂等键，不会重复付钱。最长退出时间约为一个小事务 + 一次 `send_text` 的文本等待。后台连接由线程自己在 `finally` 里关闭，`on_unload` 不碰它。框架在插件线程退出时调用 `on_unload`（`wxbot_framework/plugins.py:110-111`）；热重载期间新旧两份实例可能短暂各有一个后台线程，所有写都幂等，最多重复一次无害的读。
 - 异常收口三层：① 每个「群 × 动作」包一层 `try/except Exception`，记 `logger.exception("playhub 后台 %s 失败：room=%s", action, room)`，`TickReport.errors += 1`，不写 last_run，下个 tick 重来；② `tick()` 外层再包一层，保证循环不死；③ `start()` 里账号/开库失败只记一次 warning 并在下个 tick 重试。
 - 日志：logger 名 `Plugin.playhub`（即 `ctx.logger`，`sdk.py:479`）；每个 tick 只在 `TickReport` 有非零项时记一条 info 汇总，空 tick 不记；改名播报失败、余额不足这类业务失败记 info/warning 并进 `audit`（`action` 前缀统一 `sched:`，与 `schema.sql:330` 的注释一致），`detail` 只写结构化字段，不写消息正文与昵称以外的聊天内容。
 

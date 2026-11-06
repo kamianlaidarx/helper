@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import random
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -30,9 +31,12 @@ from plugins.playhub.scheduler import (
     SCHED_LAST_CHEST,
     SCHED_LAST_PURGE,
     SCHED_LAST_RENAME,
+    SCHED_LAST_SALARY,
     Scheduler,
     TickReport,
+    run_purge,
     run_rename,
+    run_salary,
 )
 from wxbot_framework import game_slot
 
@@ -467,6 +471,21 @@ class GarbageCollectTest(SchedulerBase):
         report = self.tick(now=ts("2026-11-04 05:30"))
         self.assertEqual((report.idem_purged, report.audit_purged), (0, 0))
 
+    def test_stopped_purge_does_not_mark_the_day_as_done(self):
+        with self.store.tx() as conn:
+            conn.execute("INSERT INTO idem (key, scope, at) VALUES ('old', 'x', ?)",
+                         (NOW - 31 * 86400,))
+        stopped = threading.Event()
+        stopped.set()
+        self.assertEqual(run_purge(self.store, ts("2026-11-04 04:30"), stopped=stopped), (0, 0))
+        self.assertEqual(self.idem_keys(), ["old"])
+        # 卸载打断时**不**记「今天已清」，否则剩下的行要等到明天
+        self.assertIsNone(self.kv(SCHED_LAST_PURGE, room="*"))
+
+        report = self.tick(now=ts("2026-11-04 04:40"))
+        self.assertEqual(report.idem_purged, 1)
+        self.assertEqual(self.kv(SCHED_LAST_PURGE, room="*"), "2026-11-04")
+
     def test_purge_before_four_am_waits(self):
         with self.store.tx() as conn:
             conn.execute("INSERT INTO idem (key, scope, at) VALUES ('old', 'x', ?)",
@@ -596,6 +615,45 @@ class SalaryTest(SchedulerBase):
             conn.execute("DELETE FROM kv WHERE key = 'feature.employ'")
         self.assertEqual(self.tick().salary_paid, 0)
         self.assertEqual(self.coins(UID_B), 0)
+
+    def test_stop_mid_room_leaves_the_remaining_contracts_for_next_start(self):
+        self.ensure(UID_A, coins=100)
+        self.ensure(UID_B)
+        self.ensure(UID_C)
+        self.employ(since="2026-11-02")
+        self.add_pair(kind="employ", low=UID_A, high=UID_C, by=UID_A, since=ts("2026-11-02 12:00"))
+
+        class StopAfterFirstPay:
+            """前两次「该收手了吗」答否、之后答是：模拟第一份合同付完就卸载。"""
+            def __init__(self):
+                self.calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls > 2
+
+        paid, skipped = run_salary(
+            self.store, ROOM, "2026-11-04", NOW, stopped=StopAfterFirstPay()
+        )
+        self.assertEqual((paid, skipped), (1, 0))
+        self.assertEqual(self.coins(UID_B), 20)        # 第一份照发
+        self.assertEqual(self.coins(UID_C), 0)         # 第二份一分没动
+
+    def test_stopped_scheduler_does_not_mark_salary_as_done(self):
+        self.ensure(UID_A, coins=100)
+        self.ensure(UID_B)
+        self.employ(since="2026-11-02")
+        self.sched._stopped.set()
+        try:
+            counts = self.sched._salary_room(self.store, ROOM, "2026-11-04", (10, 30), NOW)
+        finally:
+            self.sched._stopped.clear()
+        self.assertEqual(counts, (0, 0))
+        self.assertIsNone(self.kv(SCHED_LAST_SALARY))     # 卸载时不记「今天已发」
+
+        report = self.tick(now=NOW + 60)
+        self.assertEqual(report.salary_paid, 2)           # 11-03、11-04 照常补上
+        self.assertEqual(self.kv(SCHED_LAST_SALARY), "2026-11-04")
 
     def test_bad_by_uid_is_skipped_and_audited(self):
         self.ensure(UID_A, coins=100)

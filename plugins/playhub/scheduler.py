@@ -353,6 +353,10 @@ def run_purge(store, now: int, *, stopped=None) -> tuple[int, int]:
 
     idem_count = _purge_idem(store, now - IDEM_RETENTION_DAYS * 86400, stopped=stopped)
     audit_count = _purge_audit(store, now - AUDIT_RETENTION_DAYS * 86400, stopped=stopped)
+    if _stopped_of(stopped):
+        # 卸载打断：**不**记「今天已清」，剩下的过期行留给下一次启动（`§4.2.7`）。
+        # 记了就会等到明天才重试，和注释承诺的不是一回事。
+        return idem_count, audit_count
     with store.tx() as conn:
         kv.put(conn, GLOBAL_ROOM, SCHED_LAST_PURGE, today, now)
         _audit(conn, now=now, room=None, actor="scheduler", action="sched:gc",
@@ -386,7 +390,7 @@ def _salary_days(since_day: str, today: str) -> list[str]:
     return [(start + timedelta(days=offset)).isoformat() for offset in range((end - start).days + 1)]
 
 
-def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
+def run_salary(store, room: str, day: str, now: int, *, stopped=None) -> tuple[int, int]:
     """给这个群的每份雇佣合同发工资；返回 `(发出天数, 因余额不足跳过天数)`。"""
     with store.tx(immediate=False) as conn:
         if not switches.is_on(conn, room, switches.EMPLOY):
@@ -398,6 +402,8 @@ def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
 
     paid = skipped = 0
     for row in pairs:
+        if _stopped_of(stopped):             # 卸载中：剩下的合同留给下一次启动
+            break
         pair_id = int(row["id"])
         employer = str(row["by_uid"] or "")
         employee = _partner_of(row, employer) if employer else ""
@@ -415,6 +421,8 @@ def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
             continue
         keys = f"sched:salary:{pair_id}"
         for due_day in _salary_days(clock.day_of(int(row["since"] or 0)), day):
+            if _stopped_of(stopped):         # 补发过程中卸载：剩下的天数留给下一次启动
+                return paid, skipped
             operation_key = f"{keys}:{due_day}"
             try:
                 with store.tx() as conn:
@@ -702,7 +710,11 @@ class Scheduler:
             last = kv.get(conn, room, SCHED_LAST_SALARY)
         if not is_due_daily(last, day, hm, SALARY_AFTER):
             return 0, 0
-        paid, skipped = run_salary(store, room, day, now)
+        paid, skipped = run_salary(store, room, day, now, stopped=self._stopped)
+        if self._stopped.is_set():
+            # 卸载打断：**不**记「今天已发」，剩下的合同留给下一次启动；
+            # 已发过的那些会撞幂等键（DuplicatePosting），重来时不会重复付钱。
+            return paid, skipped
         self._touch(store, room, SCHED_LAST_SALARY, day, now)
         return paid, skipped
 
