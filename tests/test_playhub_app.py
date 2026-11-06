@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from plugins.playhub.adapters.memberfeed import MemberFeed
-from plugins.playhub.app import ERROR_TEXT, HELP_TEXT, App, help_text
+from plugins.playhub.app import ERROR_TEXT, HELP_MAX_BYTES, HELP_TEXT, App, help_text
 from plugins.playhub.core import Store, balance, credit, ensure_player
 from plugins.playhub.core.clock import CN
 from plugins.playhub.core.permissions import gate, is_allowed, normalize_role
@@ -475,13 +475,22 @@ class HelpTextTest(unittest.TestCase):
     def test_lists_current_features(self):
         text = help_text()
         self.assertEqual(text, HELP_TEXT)
-        self.assertTrue(text.startswith("====="), text)     # §4.5：总览卡也要装饰头
         for word in ("签到", "抽签", "排行榜", "猜成语", "找茬", "问答",
                      "提示", "公布答案", "换一题", "结束"):
             self.assertIn(word, text)
         # 第 3 批的关系玩法必须出现在总览里，并标明默认关闭——藏起来等于让用户猜
         for word in ("结婚", "闺蜜", "结拜", "雇佣", "纳妾", "默认关闭"):
             self.assertIn(word, text)
+
+    def test_fits_in_one_message(self):
+        # `wxbot_framework/sdk.py:123`：超过 1023 字节会分段发送，群里就是刷屏。
+        # 帮助必须是**一条**消息，所以按字节卡死，并顺手限制行数（一屏能看完）。
+        text = help_text()
+        self.assertLessEqual(len(text.encode("utf-8")), HELP_MAX_BYTES, text)
+        self.assertLessEqual(len(text.splitlines()), 10, text)
+        # 不分段也意味着不能有装饰头/分隔线——手机上那两行看起来像乱码。
+        self.assertFalse(text.startswith("====="), text)
+        self.assertNotIn("════", text)
 
     def test_keeps_known_limitation(self):
         # §8.6：帮助必须保留一行已知限制说明。
