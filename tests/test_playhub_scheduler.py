@@ -857,5 +857,130 @@ class PluginLifecycleTest(unittest.TestCase):
             self.assertIsNone(plugin._scheduler)
 
 
+class DueScheduleTests(unittest.TestCase):
+    """`is_due_daily` / `is_due_weekly` 的边界（`§4.2` 的「到期」口径）。
+
+    两个函数是纯函数，却是整条定时链路最容易错的地方：差一分钟就漏发或重发
+    （重发靠 `wallet_ledger` 的 operation_key 兜，漏发没人兜）。
+    """
+
+    def test_daily_waits_until_the_minute_arrives(self) -> None:
+        from plugins.playhub.scheduler import is_due_daily
+
+        after = (0, 5)
+        self.assertFalse(is_due_daily("", "2026-03-01", (0, 4), after))
+        self.assertTrue(is_due_daily("", "2026-03-01", (0, 5), after), "到点这一分钟就算到期")
+        self.assertTrue(is_due_daily("", "2026-03-01", (23, 59), after))
+
+    def test_daily_is_skipped_when_already_run_today(self) -> None:
+        from plugins.playhub.scheduler import is_due_daily
+
+        self.assertFalse(is_due_daily("2026-03-01", "2026-03-01", (23, 59), (0, 5)))
+
+    def test_daily_runs_again_the_next_day(self) -> None:
+        from plugins.playhub.scheduler import is_due_daily
+
+        self.assertTrue(is_due_daily("2026-02-28", "2026-03-01", (0, 5), (0, 5)))
+
+    def test_daily_with_clock_skew_is_re_attempted_and_left_to_idempotency(self) -> None:
+        from plugins.playhub.scheduler import is_due_daily
+
+        # 机器时间被拨回到「上次执行日」之前：判定为未做而重跑一次。
+        # 真正的重复发钱由 wallet_ledger 的 operation_key 挡住（run_salary 捕 DuplicatePosting），
+        # 所以这里固定的是「判定层不猜」，不是「允许重复发」。
+        self.assertTrue(is_due_daily("2026-03-05", "2026-03-01", (12, 0), (0, 5)))
+
+    def test_weekly_on_monday_waits_for_the_minute(self) -> None:
+        from plugins.playhub.scheduler import is_due_weekly
+
+        after = (0, 10)
+        self.assertFalse(is_due_weekly("2026-W08", "2026-W09", (1, 0, 9), after))
+        self.assertTrue(is_due_weekly("2026-W08", "2026-W09", (1, 0, 10), after))
+
+    def test_weekly_off_monday_backfills_immediately(self) -> None:
+        from plugins.playhub.scheduler import is_due_weekly
+
+        # 停机错过周一：周二 00:00 就要补，不能等下周
+        self.assertTrue(is_due_weekly("2026-W08", "2026-W09", (2, 0, 0), (0, 10)))
+        self.assertTrue(is_due_weekly("2026-W08", "2026-W09", (7, 23, 59), (0, 10)))
+
+    def test_weekly_is_skipped_within_the_same_iso_week(self) -> None:
+        from plugins.playhub.scheduler import is_due_weekly
+
+        self.assertFalse(is_due_weekly("2026-W09", "2026-W09", (3, 12, 0), (0, 10)))
+
+    def test_weekly_cross_year_week_key(self) -> None:
+        from plugins.playhub.scheduler import is_due_weekly
+
+        # 2026-01-01 是周四，ISO 周键属于 2026-W01（周一起），不是 2025-W53
+        self.assertEqual(clock.week_of(self._ts("2026-01-01T00:00:00")), "2026-W01")
+        self.assertTrue(is_due_weekly("2025-W52", "2026-W01", (4, 0, 0), (0, 10)))
+
+    def test_day_and_week_keys_flip_at_beijing_midnight(self) -> None:
+        before = self._ts("2026-02-28T23:59:59")
+        after = self._ts("2026-03-01T00:00:00")
+        self.assertEqual(clock.day_of(before), "2026-02-28")
+        self.assertEqual(clock.day_of(after), "2026-03-01")
+        self.assertEqual(clock.week_of(before), "2026-W09")
+        self.assertEqual(clock.week_of(after), "2026-W09")
+
+    def test_week_key_flips_on_monday_midnight(self) -> None:
+        sunday = self._ts("2026-03-01T23:59:59")     # 周日
+        monday = self._ts("2026-03-02T00:00:00")     # 周一
+        self.assertEqual(clock.week_of(sunday), "2026-W09")
+        self.assertEqual(clock.week_of(monday), "2026-W10")
+
+    @staticmethod
+    def _ts(iso: str) -> int:
+        return int(datetime.fromisoformat(iso).replace(tzinfo=CN).timestamp())
+
+
+class SalaryDaysTests(unittest.TestCase):
+    """补发窗口：成交次日 起、最多 3 天、到今天为止（`§4.2.4`）。"""
+
+    def test_deal_day_is_not_paid(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(_salary_days("2026-03-01", "2026-03-01"), [])
+
+    def test_next_day_is_paid_once(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(_salary_days("2026-03-01", "2026-03-02"), ["2026-03-02"])
+
+    def test_missed_days_are_capped_at_three(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(
+            _salary_days("2026-02-20", "2026-03-01"),
+            ["2026-02-27", "2026-02-28", "2026-03-01"],
+        )
+
+    def test_two_days_behind_pays_two(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(_salary_days("2026-02-27", "2026-03-01"), ["2026-02-28", "2026-03-01"])
+
+    def test_crosses_month_and_non_leap_february(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        # 2026 不是闰年，2 月只有 28 天
+        self.assertEqual(
+            _salary_days("2026-02-26", "2026-03-01"),
+            ["2026-02-27", "2026-02-28", "2026-03-01"],
+        )
+
+    def test_clock_skew_backwards_pays_nothing(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(_salary_days("2026-03-05", "2026-03-01"), [])
+
+    def test_broken_since_day_is_ignored(self) -> None:
+        from plugins.playhub.scheduler import _salary_days
+
+        self.assertEqual(_salary_days("", "2026-03-01"), [])
+        self.assertEqual(_salary_days("2026-13-01", "2026-03-01"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
