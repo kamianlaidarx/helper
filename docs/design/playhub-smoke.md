@@ -14,7 +14,7 @@
 | 1 | 装 64 位 **Python 3.13** 与 Git | `python -V` 出 3.13.x；`git --version` 正常 |
 | 2 | `git clone https://github.com/kamianlaidarx/helper C:\helper-main` | `git log -1` 是 `d3ac847` 或更新 |
 | 3 | `pip install -r requirements.txt` | 最后一行 `Successfully installed ...` |
-| 4 | `python -m pytest tests -q -k "playhub or idiom_chain"` | `556 passed` 上下、**0 failed**（这是版本自检，与微信无关） |
+| 4 | `python -m pytest tests -q -k "playhub or idiom_chain"` | `609 passed` 上下、**0 failed**（这是版本自检，与微信无关） |
 | 5 | `python main.py --check` | `配置与插件语法检查通过` |
 | 6 | `python tools/init_config.py` | 生成该机自己的 `bot_config.json`（**不要拷开发机的**，里面绑着开发机的 wxid） |
 | 7 | 云电脑微信登录**测试号**，进一个**只有你自己几个号的测试群** | 群里能看到机器人号在线 |
