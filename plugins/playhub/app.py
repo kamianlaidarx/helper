@@ -95,13 +95,14 @@ class App:
     测试可以注入 `engines` 与 `rng` 以便复现。
     """
 
-    def __init__(self, *, store=None, rng=None, now_fn=None, repo_root=None, engines=None, logger=None):
+    def __init__(self, *, store=None, rng=None, now_fn=None, repo_root=None, engines=None,
+                 logger=None, config=None):
         self._store = store
         self._game = GameRuntime(store=store)
         self._engines = (
             engines
             if engines is not None
-            else build_engines(rng=rng, now_fn=now_fn, repo_root=repo_root)
+            else build_engines(rng=rng, now_fn=now_fn, repo_root=repo_root, config=config)
         )
         self._log = logger if logger is not None else logging.getLogger("playhub.app")
         self._now = now_fn if now_fn is not None else clock.now_ts

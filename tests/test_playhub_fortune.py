@@ -213,14 +213,17 @@ class AlmanacTests(FortuneCase):
         self.assertEqual(self.wallet_rows(), 0, "黄历不该建钱包")
 
     def test_missing_bank_replies_with_hint(self) -> None:
+        # Windows 下临时目录删除时若连接还开着会 PermissionError，所以先关库再出 with。
         with tempfile.TemporaryDirectory() as bare:
             store = Store(pathlib.Path(bare) / "playhub.sqlite3", account="acct")
-            self.addCleanup(store.close)
             store.migrate()
             app = App(
                 store=store, rng=FixedRng(), now_fn=FakeClock(self.day), repo_root=pathlib.Path(bare)
             )
-            reply = app.handle_message(self.ctx, FakeMsg("黄历"))
+            try:
+                reply = app.handle_message(self.ctx, FakeMsg("黄历"))
+            finally:
+                store.close()
         self.assertIsNotNone(reply)
         self.assertIn("黄历还没准备好", reply.text)
         self.assertIn("almanac.jsonl", reply.text)
@@ -317,32 +320,34 @@ class WealthTests(FortuneCase):
         self.assertEqual(self.coins(UID_B), daily_engine.WEALTH_COIN)
 
     def test_missing_bank_does_not_charge_or_consume_counter(self) -> None:
+        # Windows 下临时目录删除时若连接还开着会 PermissionError，所以先关库再出 with。
         with tempfile.TemporaryDirectory() as bare:
             store = Store(pathlib.Path(bare) / "playhub.sqlite3", account="acct")
-            self.addCleanup(store.close)
             store.migrate()
             root = pathlib.Path(bare)
             clock = FakeClock(self.day)
             app = App(store=store, rng=FixedRng(), now_fn=clock, repo_root=root)
+            try:
+                reply = app.handle_message(self.ctx, FakeMsg("求财神"))
+                self.assertIsNotNone(reply)
+                self.assertIn(daily_engine.WEALTH_NOT_READY, reply.text)
+                with store.tx(immediate=False) as conn:
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM wallet_ledger").fetchone()[0], 0)
+                    used = conn.execute(
+                        "SELECT COUNT(*) FROM daily_counter WHERE key = ?", (daily_engine.WEALTH_KEY,)
+                    ).fetchone()[0]
+                self.assertEqual(used, 0, "题库缺失不该吃掉当天次数")
 
-            reply = app.handle_message(self.ctx, FakeMsg("求财神"))
-            self.assertIsNotNone(reply)
-            self.assertIn(daily_engine.WEALTH_NOT_READY, reply.text)
-            with store.tx(immediate=False) as conn:
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM wallet_ledger").fetchone()[0], 0)
-                used = conn.execute(
-                    "SELECT COUNT(*) FROM daily_counter WHERE key = ?", (daily_engine.WEALTH_KEY,)
-                ).fetchone()[0]
-            self.assertEqual(used, 0, "题库缺失不该吃掉当天次数")
-
-            # 补上题库后同一天还能正常求到（证明上一次没消耗次数）
-            content = root / "content"
-            content.mkdir(parents=True, exist_ok=True)
-            (content / "wealth.jsonl").write_text(
-                (REPO_CONTENT / "wealth.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
-            )
-            second = app.handle_message(self.ctx, FakeMsg("求财神"))
-            self.assertIn("财神到", second.text)
+                # 补上题库后同一天还能正常求到（证明上一次没消耗次数）
+                content = root / "content"
+                content.mkdir(parents=True, exist_ok=True)
+                (content / "wealth.jsonl").write_text(
+                    (REPO_CONTENT / "wealth.jsonl").read_text(encoding="utf-8"), encoding="utf-8"
+                )
+                second = app.handle_message(self.ctx, FakeMsg("求财神"))
+                self.assertIn("财神到", second.text)
+            finally:
+                store.close()
 
     def test_quote_comes_from_bank(self) -> None:
         texts = [

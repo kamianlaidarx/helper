@@ -195,6 +195,7 @@ class LoungeEngine:
             render.row("🤖 ", "智能聊天还没接上（要单独配一家模型服务）"),
             render.row("🎮 ", "现在能陪你的：13 类猜题、成语接龙、看图猜成语"),
             render.row("💬 ", "想聊天就先 @我 直接说话，走的是另一个通道"),
+            render.row("🔌 ", "那个通道归框架插件 mention_chat 管，本群没有开关：@ 了就答，要关只能停用插件"),
         ]
         return Reply(
             render.menu(

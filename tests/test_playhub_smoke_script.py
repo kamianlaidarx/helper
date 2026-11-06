@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -84,11 +85,16 @@ class SmokeScriptSubprocessTests(unittest.TestCase):
     """命令行方式：与同事手动执行完全一致。"""
 
     def test_exit_code_is_zero(self) -> None:
+        # Windows 上 `text=True` 会按本地代码页（cp936）解码子进程序列，而脚本输出是 UTF-8：
+        # 一方面显式指定 encoding，另一方面用 PYTHONIOENCODING 让子进程稳定按 UTF-8 写。
         proc = subprocess.run(
             [sys.executable, str(SCRIPT)],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=120,
         )
         self.assertEqual(proc.returncode, 0, f"冒烟脚本退出码非 0：\n{proc.stdout}\n{proc.stderr}")

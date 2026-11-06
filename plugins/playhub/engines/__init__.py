@@ -92,11 +92,14 @@ def msg_nickname(msg: Any, ctx: Any = None) -> str:
     return ""
 
 
-def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
+def build_engines(*, rng=None, now_fn=None, repo_root=None, config=None) -> dict[str, Any]:
     """构建引擎表。
 
     子模块在函数内延迟 import：`engines/__init__` 定义 `Reply`，
     子模块又要 `from . import Reply`，顶层 import 会形成循环。
+
+    `config` 是 `bot_config.json → plugins.playhub` 那一节：只有出站能力（天气）
+    需要它——`build_provider()` 据此决定联网还是离线（见 `adapters/outbound.py`）。
     """
     from .daily import DailyEngine
     from .quiz import QuizEngine
@@ -109,6 +112,7 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
     from .outbound import OutboundEngine
     from .groupstat import GroupStatEngine
     from .moderation import ModerationEngine
+    from ..adapters.outbound import build_provider
 
     return {
         "daily": DailyEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
@@ -126,7 +130,7 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None) -> dict[str, Any]:
         # 第 3 批：点歌队列（音源未接，只报位）
         "music": MusicEngine(now_fn=now_fn),
         # 第 3 批：出站能力，天气走 adapters.outbound 的 provider（默认离线）
-        "outbound": OutboundEngine(now_fn=now_fn),
+        "outbound": OutboundEngine(now_fn=now_fn, provider=build_provider(config)),
         # 第 4 批：潜水 / 邀请 / 改名巡检（只统计，不清人）
         "groupstat": GroupStatEngine(now_fn=now_fn),
         # 第 4 批：小黑屋 / 黑名单（只在本插件内生效）

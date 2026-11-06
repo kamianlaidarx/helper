@@ -95,7 +95,9 @@ class Plugin:
             # migrate() 幂等（schema.sql 全是 IF NOT EXISTS），每次进程内首次开库跑一遍。
             store = Store(path, account=account)
             store.migrate()
-            app = App(store=store, repo_root=Path(root), logger=logger)
+            # config 是 `bot_config.json → plugins.playhub` 那一节；目前只有天气用得到。
+            app = App(store=store, repo_root=Path(root), logger=logger,
+                      config=getattr(ctx, "config", None))
         except Exception:
             if store is not None:
                 try:

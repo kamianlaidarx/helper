@@ -241,7 +241,7 @@ class MusicTests(Base):
 class OutboundWeatherTests(Base):
     def test_offline_says_not_connected(self) -> None:
         text = self.say("天气 成都")
-        self.assertIn("天气服务还没接入", text)
+        self.assertIn("天气服务还没配置", text)
         self.assertIn("不编", text.replace("绝不编", "不编"))
 
     def test_bare_weather_returns_card(self) -> None:
@@ -251,7 +251,7 @@ class OutboundWeatherTests(Base):
     def test_switch_does_not_gate_weather(self) -> None:
         with self.store.tx() as conn:
             kv.put(conn, ROOM, switches.kv_key(switches.MARRIAGE), "off", self.clock())
-        self.assertIn("天气服务还没接入", self.say("天气 成都"))
+        self.assertIn("天气服务还没配置", self.say("天气 成都"))
 
 
 if __name__ == "__main__":

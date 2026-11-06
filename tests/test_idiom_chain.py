@@ -106,6 +106,14 @@ class IdiomPluginTests(unittest.TestCase):
         self.assertEqual(len(self.ctx.sent), 1)
         self.assertEqual(self.plugin.games[ROOM].opening, "一心一意")
 
+    def test_four_char_control_words_are_ignored_during_chain(self):
+        # 「公布答案」是猜题的框架控制词，恰好四个字：不能被当成本轮的接龙答案去判定。
+        self.start()
+        self.send("公布答案")
+        self.send("换一题")
+        self.assertEqual(len(self.ctx.sent), 1, "控制词不该被接龙接话")
+        self.assertEqual(self.plugin.games[ROOM].players, {}, "控制词不该消耗本轮的接龙判定")
+
     def test_merged_mode_uses_latest_word_and_only_first_received_answer(self):
         self.start()
         self.send("意气风发")
