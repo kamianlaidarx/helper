@@ -41,8 +41,9 @@
 
 ## 0 结论摘要
 
-1. **触发方式：纯关键词，无前缀。** 整条消息归一化后**整词精确等于**某触发词才触发；允许「关键词 + 分隔符（空白或 `@`）+ 参数」。**不做包含匹配**（61 个词里含「天气」「礼物」「宝宝」这类常用词，包含匹配会让正常聊天频繁误触），**也不做最长匹配**（精确匹配下不存在前缀歧义，理由见 §2.6）。
-2. **触发词账**：playhub **自有 61 个词**（承载 43 个功能项，含别名），**复用框架既有 4 个词**（`提示`/`换一题`/`公布答案`/`结束`，来自 `wxbot_framework/text.py:8-9`；`退出猜成语` 为兼容别名）。启动时做全局唯一性校验，校验域 = 61 + 框架 8 个中文控制词 = **69 个词**；冲突则记 `logger.error` 并**禁用冲突的两侧引擎之一**（不整插件下线，见 §2.6 第 4 条）。
+1. **触发方式：纯关键词，无前缀。** 整条消息归一化后**整词精确等于**某触发词才触发；允许「关键词 + 分隔符（空白或 `@`）+ 参数」。**不做包含匹配**（62 个词里含「天气」「礼物」「宝宝」这类常用词，包含匹配会让正常聊天频繁误触），**也不做最长匹配**（精确匹配下不存在前缀歧义，理由见 §2.6）。
+2. **触发词账**：playhub **自有 62 个词**（承载 44 个动作，含别名），**复用框架既有 4 个词**（`提示`/`换一题`/`公布答案`/`结束`，来自 `wxbot_framework/text.py:8-9`；`退出猜成语` 为兼容别名）。启动时做全局唯一性校验，校验域 = 62 + 框架 8 个中文控制词 = **70 个词**；冲突则记 `logger.error` 并**禁用冲突的两侧引擎之一**（不整插件下线，见 §2.6 第 4 条）。
+   **第 4 批增补**：新增第 62 个触发词 `解签`（动作 `daily.fortune_explain`，`risk=low`），归入第 3 项抽签（小V 抽签卡本身带「欲知详情可发送【解签】」），不另占 47 项编号。
    **本批增补**：新增第 61 个触发词 `帮助`（动作 `business.help`，`risk=low`）；`帮助` 是本批唯一新增词，其余 60 词口径不变。
 3. **一个插件**：`plugins/playhub/`，内部用子包分层；**42 个文件**（上限 64），约 6.2k 行、~323 KiB（上限 1 MiB）。新增 `keywords.py` 与 `core/permissions.py`，`router.py` 因删掉 trie 减 30 行、因 `#`/艾特范围解析增 2 KiB。
 4. 不拆成多个插件：跨插件共享 core 只能靠 `import _wxbot_plugins.<共享目录>`（`wxbot_framework/plugins.py:205-208`），共享目录不进任何插件的源码快照（`wxbot_framework/plugin_sources.py:82-97`），回滚不可复现且热更新失效——脆弱，不采用。
@@ -53,7 +54,7 @@
 9. 题库/文案**不放插件目录**（会吃掉 1 MiB 与 64 文件预算，且网页保存会做快照校验）：放仓库 `content/playhub/*.jsonl`，运行时可用 `<工作区>/.runtime/playhub/content/` 覆盖。
 10. 竞猜（11 类目）+ 文字找茬 + 趣味问答共用一个 `quiz` 引擎、一张 `quiz_round` 表，类目只是题库字段。竞猜的子命令**复用框架已有的四个词**（`提示`/`换一题`/`公布答案`/`结束`；`退出猜成语` 自 2026-11-05 起只作兼容别名，见 §2.7 冲突 3），不另造 `收题` 之类的同义词。
 11. **必须改一处现有代码才能完整可用**：`plugins/idiom_chain/__init__.py:110` 在接龙开局后把**任何非 `/` 开头文本**送判定，而判定函数对非四字输入本地短路后仍会**回一句「请输入一个完整的四字成语」**（`plugins/idiom_chain/judge.py:39-40`）。前缀方案下线后，v1 的"放行 `.` 前缀"解法彻底失效。推荐把判据改为「`FOUR_CHINESE` 四字中文 **且** 不在 `GROUP_CONTROL_COMMANDS` 内才送判定」（§2.7 方案 A）。**附带收益是消除接龙期间的刷屏误回复；不省 LLM 调用——`judge.py:39-40` 本来就已短路，v1 的这个理由不成立，此处更正。需改现有插件，用户未批准。**
-12. 工作量：**49 人日**（含每批测试；比 v2 基线多 4 人日净增：两币钱包与迁移 +1.25、一层权限基础 +0.5、`#`/艾特解析 +0.25、婚姻四子命令 +1.25、钻石买盲盒次数与清求婚次数 +0.5、四榜及活跃月/总 +0.5、C1 与群通知回归 +0.75、定时配置批准契约 +0.5、跨模块一致性验收 +0.25，裁掉超级宝宝扩展 −0.75、裁掉切磋监狱/医院联动 −1.0）。加 15% 风险缓冲 7.35 人日 = **56.35 人日，排期取 57 人日**；4 个批次（11 / 12 / 14 / 12），第 1 批 11 人日可上线。
+12. 工作量：**49 人日**（含每批测试；比 v2 基线多 4 人日净增：两币钱包与迁移 +1.25、一层权限基础 +0.5、`#`/艾特解析 +0.25、婚姻四子命令 +1.25、钻石买盲盒次数与清求婚次数 +0.5、四榜及活跃月/总 +0.5、C1 与群通知回归 +0.75、后台定时线程（§4.2，原「定时配置批准契约」作废）+0.5、跨模块一致性验收 +0.25，裁掉超级宝宝扩展 −0.75、裁掉切磋监狱/医院联动 −1.0）。加 15% 风险缓冲 7.35 人日 = **56.35 人日，排期取 57 人日**；4 个批次（11 / 12 / 14 / 12），第 1 批 11 人日可上线。
 13. **货币只做两种：金币 + 钻石。** 银币 / 魅力 / 身价 / 积分全部 v2。钻石是稀缺货币，**正向产出只有三处**：`签到（连签第 7 天）`、`开宝箱（金箱）`、`抽签（上上签）`，均为小概率产出；其他玩法（含群内发言、礼物、切磋、排行榜）不产钻石。数值锚见 §4.4。
 14. **权限只做一层门禁**：统一用 `ctx.group_member_role()`，只放行 `owner` / `admin`；`unknown` **失败关闭**，不回退到自建 owner 白名单。普通成员的个人玩法（`宝宝 看`、`宝宝 改名 X`）不套用该门禁（§2.4、§7）。
 
@@ -99,7 +100,7 @@ plugins/playhub/                 ← 唯一插件目录（发现层，plugins.py
 ├── __init__.py                  ← Plugin 类：on_load / on_message / on_unload，事件与命令总入口
 ├── app.py                       ← 装配：路径解析、Store 打开、引擎注册、定时动作表
 ├── router.py                    ← 关键词路由：归一化 → 整词精确匹配 → 裸触发策略 → 静默忽略 → 限流
-├── keywords.py                  ← 关键词表（单一事实源）：61 个词 + 别名 + needs_arg/bare_behavior/risk/owner
+├── keywords.py                  ← 关键词表（单一事实源）：62 个词 + 别名 + needs_arg/bare_behavior/risk/owner
 ├── registry.py                  ← 动作 id → 引擎的注册表（帮助文案由 keywords.py + registry.py 共同生成）
 ├── business.py                  ← business 函数（网页可编辑：帮助文案、签到文案、公告模板）
 ├── core/                        ← 内核：唯一 SQL 层
@@ -145,7 +146,7 @@ content/playhub/                 ← 仓库级题库/文案（不在 plugins/ �
 ├── chengyu.jsonl   song.jsonl   riddle.jsonl   movie.jsonl   star.jsonl
 ├── animal.jsonl    plant.jsonl  food.jsonl     honor.jsonl   anime.jsonl
 ├── guoman.jsonl    diff.jsonl   trivia.jsonl   copy.jsonl
-├── fortune.jsonl   almanac.jsonl horoscope.jsonl sign.jsonl
+├── fortune.jsonl（每行 id/no/tier/text/jie）   wealth.jsonl   almanac.jsonl horoscope.jsonl sign.jsonl
 └── items.json
 ```
 
@@ -159,7 +160,7 @@ content/playhub/                 ← 仓库级题库/文案（不在 plugins/ �
 | 2 | `__init__.py` | 190 | 8.5 | `Plugin`：路由与事件分发、Reply 发送（**含自触发闸**）、`is_self` 免疫、异常兜底 |
 | 3 | `app.py` | 220 | 11 | 路径解析、Store 生命周期、引擎注册、动作表、**关键词表构建与冲突处置**、**权限审计与执行编排** |
 | 4 | `router.py` | 110 | 7 | 归一化（含艾特范围重映射）、整词精确匹配、**只拆首部第一个 `#`**、裸触发策略、限流、静默忽略 |
-| 5 | `keywords.py` | 110 | 6 | **61 个触发词 + 别名 + 元数据（needs_arg/bare_behavior/risk/owner）+ 启动期冲突检测** |
+| 5 | `keywords.py` | 110 | 6 | **62 个触发词 + 别名 + 元数据（needs_arg/bare_behavior/risk/owner）+ 启动期冲突检测** |
 | 6 | `registry.py` | 100 | 5 | 动作 id → 引擎绑定、帮助文案生成（词条来自 `keywords.py`） |
 | 7 | `business.py` | 120 | 6 | 网页可编辑函数（帮助、签到、公告 3–6 个，≤8 上限） |
 | 8 | `README.md` | 60 | 4 | 使用与运维说明（含触发词速查表、v1 范围与「只统计不清人」等口径） |
@@ -174,7 +175,7 @@ content/playhub/                 ← 仓库级题库/文案（不在 plugins/ �
 | 17 | `core/idem.py` | 70 | 3 | 幂等键 |
 | 18 | `core/audit.py` | 80 | 3 | 审计日志 |
 | 19 | `core/rank.py` | 120 | 7 | **四榜**（金币/活跃/婚姻/邀请）及活跃期间查询 |
-| 20 | `core/kv.py` | 60 | 2 | 房间级小状态（含定时推送计划 `plan_id/revision`） |
+| 20 | `core/kv.py` | 60 | 2 | 房间级小状态（含后台定时动作的 `sched.last.*` 游标与改名快照，§4.2） |
 | 21 | `core/errors.py` | 40 | 1 | 异常类型（含 `TriggerConflict`） |
 | 22 | `core/textkit.py` | 120 | 5.5 | 文案渲染、截断、占位符、**关键词同形检查**（自触发闸调用） |
 | 23 | `content/__init__.py` | 10 | 0.5 | 导出加载器 |
@@ -183,7 +184,7 @@ content/playhub/                 ← 仓库级题库/文案（不在 plugins/ �
 | 26 | `content/validate.py` | 110 | 5 | 发布前校验（也可被 `tools/` 调用） |
 | 27 | `engines/__init__.py` | 30 | 1 | 引擎注册表 |
 | 28 | `engines/base.py` | 110 | 5 | `Engine` 协议、`Command`、`Reply` |
-| 29 | `engines/daily.py` | 260 | 12 | 签到、抽签、黄历、星座、求财神 |
+| 29 | `engines/daily.py` | 260 | 12 | 签到、抽签、解签、黄历、星座、求财神 |
 | 30 | `engines/quiz.py` | 420 | 20 | 11 类竞猜、找茬、趣味问答、收题；**复用框架四个子命令词** |
 | 31 | `engines/social.py` | 520 | 26 | 结婚（含新增四子命令与清求婚次数）、宝宝（**v1 基础版**）、闺蜜、纳妾、结拜、雇佣、配对、关系卡、礼物 |
 | 32 | `engines/lottery.py` | 220 | 10 | 盲盒、开宝箱 |
@@ -430,7 +431,7 @@ def read_group_role(ctx, *, room: str, actor: str,
 
 - 判断与执行分离：`core/permissions.py` 只做 `GroupRole → GateDecision` 的纯判定；`adapters/memberfeed.py` 只做角色读取；`app.py` 做编排。
 - `app.py` 的执行顺序：按动作元数据判断该动作是否需要门禁 → **事务外**查 `ctx.group_member_role()`（经 `read_group_role`，可带 `expected_session`）→ 异常、异常返回值、缺失会话统一映射 `unknown` → `owner`/`admin` 放行，`member`/`unknown` 拒绝 → 拒绝时提交 `audit.result='denied'`（含动作、调用者、目标、角色、原因，**不记消息正文**）→ 拒绝路径不改业务状态、不扣款、不建定时配置。
-- 适用动作：小黑屋设置/解除、黑名单增加/移除、潜水统计、群成员改名监测开关、定时推送配置与启停，以及将来新增的清理类管理动作。
+- 适用动作：小黑屋设置/解除、黑名单增加/移除、潜水统计、群成员改名监测开关，以及将来新增的清理类管理动作。（第 46 项定时推送由用户在框架控制台自己配置，不经 playhub，不在本门禁范围内。）
 - 普通成员的个人玩法（签到、抽奖、`宝宝 看`、`宝宝 改名 X`）**不调用门禁**。这里的「改名」专指群管理侧的改名监测开关，与 `宝宝 改名 X` 无关。
 - 角色来自可能滞后的本地成员缓存；v1 **不为门禁主动同步群成员**，`unknown` 固定失败关闭，不回退到自建 owner 白名单。
 
@@ -625,8 +626,8 @@ class Trigger:
 `KeywordTable.build()` 在 `app.on_load` 跑四道校验，**任何一道都不静默降级**：
 
 1. **归一化幂等**：`normalize(t.keyword) == t.keyword`，否则 `TriggerConflict`（表里写了带空格/零宽的词，说明有人手写表时没走 `normalize`）。
-2. **全局唯一**：同一 `keyword` 出现两次 → `logger.error("触发词冲突：%r 同时属于 %s.%s 与 %s.%s", kw, e1, a1, e2, a2)` 并抛 `TriggerConflict`，异常消息里带**两个功能名**（满足"报出冲突的两个功能名"）。校验域 = playhub 61 词 ∪ 框架 `GROUP_CONTROL_COMMANDS` 的 8 个中文词（`wxbot_framework/text.py:8-9`；另两个是 `/help`、`/看图猜成语`，斜杠词不与中文词冲突）= **69 个词**。
-3. **四字排除**：任何 `FOUR_CHINESE.fullmatch(keyword)` 为真的 **playhub 自有**词 → 拒绝加载该引擎（`FOUR_CHINESE` 见 `text.py:10`）。理由在 §2.7：接龙进行中四字中文会被 `idiom_chain` 当答案吞掉（`plugins/idiom_chain/__init__.py:110` + `judge.py:39`）。框架词（`看图猜成语`/`公布答案`/`成语接龙`/`合并接龙`/`退出接龙`）不受此限，它们本来就是接龙与看图猜成语自己的词。**§4 的 61 个词全部 ≤3 字，本约束当前恒成立，由测试钉死。**
+2. **全局唯一**：同一 `keyword` 出现两次 → `logger.error("触发词冲突：%r 同时属于 %s.%s 与 %s.%s", kw, e1, a1, e2, a2)` 并抛 `TriggerConflict`，异常消息里带**两个功能名**（满足"报出冲突的两个功能名"）。校验域 = playhub 62 词 ∪ 框架 `GROUP_CONTROL_COMMANDS` 的 8 个中文词（`wxbot_framework/text.py:8-9`；另两个是 `/help`、`/看图猜成语`，斜杠词不与中文词冲突）= **70 个词**。
+3. **四字排除**：任何 `FOUR_CHINESE.fullmatch(keyword)` 为真的 **playhub 自有**词 → 拒绝加载该引擎（`FOUR_CHINESE` 见 `text.py:10`）。理由在 §2.7：接龙进行中四字中文会被 `idiom_chain` 当答案吞掉（`plugins/idiom_chain/__init__.py:110` + `judge.py:39`）。框架词（`看图猜成语`/`公布答案`/`成语接龙`/`合并接龙`/`退出接龙`）不受此限，它们本来就是接龙与看图猜成语自己的词。**§4 的 62 个词全部 ≤3 字，本约束当前恒成立，由测试钉死。**
 4. **处置粒度**：`strict=True`（默认；测试、CI、首次安装）→ 抛异常，整插件不加载；`strict=False`（运行期热重载）→ 只 `disable_engine(engine)` 并写 `kv:trigger_conflict`，其余引擎照常。
    - **与用户决策的偏差，需拍板（§9）**：用户要求"冲突则拒绝加载该插件"；本设计改为"默认严格、运行期按引擎禁用"。理由：47 项在一个插件里，一个别名拼错让 47 项全下线，等于把开发期错误放大成线上故障；而按引擎禁用只损失 1–11 个功能，且冲突信息在 `/帮助` 里可见。
 
@@ -648,7 +649,7 @@ class Trigger:
 **为什么框架挡不住、必须自己挡（此处更正 v1 的事实错误）**：
 
 - v1 写的是"仓库根 `__init__.py:58` 用 `GROUP_CONTROL_COMMANDS` 过滤自发消息"。**仓库根没有 `__init__.py`**（根目录只有 `main.py` / `web.py`）。真实位置是 `wxbot_framework/text.py:104-105`：`own_group_input = bool(msg_type == 1 and room and own_group_command(body))`，然后 `dispatch_to_plugins = not (room and is_self and not own_group_input)`；`own_group_command` 在 `text.py:13-17`，判据 = 在 `GROUP_CONTROL_COMMANDS` 内 ∨ 四字中文 ∨ 8 个 `/` 命令。另有同款判断在 `plugins/idiom_chain/__init__.py:58`。
-- 推论 A：**2–3 字的自发文本默认不进插件**。本设计的 61 个自有词全是 ≤3 字 → 天然被挡。
+- 推论 A：**2–3 字的自发文本默认不进插件**。本设计的 62 个自有词全是 ≤3 字 → 天然被挡。
 - 推论 B：**四字中文会被放行**（`FOUR_CHINESE.fullmatch`）。而 playhub 复用的 4 个框架词里，`公布答案` 是四字、`提示`/`换一题`/`退出猜成语` 直接在白名单内 → 回包若等于它们，**会被送进插件**。
 - 推论 C：用户开启 `include_self_groups`（`text.py:105`）后，所有自发群消息的 `dispatch_to_plugins` 都为真 → 全部放行。
 
@@ -664,7 +665,7 @@ class Trigger:
 | `guide` | 裸发回**一句**用法，且**每群每词 24 h 只回一次**（`kv:bare_guide.<kw>`） | 中误触词：`星座` `文案` `聊天` |
 | `silent` | 裸发完全静默（不回复、不审计、只 `logger.debug`） | 高误触词：`宝宝` `礼物` `天气` `配对` `结婚` `闺蜜` `纳妾` `雇佣` `结拜` |
 
-`guide` 的"24 h 只回一次"是关键：否则一条误触的「星座」会被回"用法：星座 狮子"，反而变成噪音源。代价是新人第一次裸发可能被静默（如果他之前误触过），所以 `/帮助` 必须把全部 61 个词连同参数形态列出来——这也是 §4 表格必须与 `keywords.py` 严格同步的原因（有测试断言词数一致）。
+`guide` 的"24 h 只回一次"是关键：否则一条误触的「星座」会被回"用法：星座 狮子"，反而变成噪音源。代价是新人第一次裸发可能被静默（如果他之前误触过），所以 `/帮助` 必须把全部 62 个词连同参数形态列出来——这也是 §4 表格必须与 `keywords.py` 严格同步的原因（有测试断言词数一致）。
 
 ### 2.7 与现有插件的冲突及解法
 
@@ -688,7 +689,7 @@ class Trigger:
   - **排除优先于四字**：`公布答案` 是四字中文且在白名单内，若只写 `not FOUR_CHINESE.fullmatch` 仍会被放行进插件（它会被判成"不是成语"并回一句）→ 必须先排除 `GROUP_CONTROL_COMMANDS`。用户原话「放行已知关键词」方向反了：这里是**拦下**已知关键词，不是放行。
   - 代价：改 1 个 if（3 行）+ 加 2 个用例（`签到` 不被接管、`一箭双雕` 仍被接管）到 `tests/test_idiom_chain.py`；需 `from wxbot_framework.text import GROUP_CONTROL_COMMANDS, FOUR_CHINESE`。风险：把「答案里的英文/数字混写」也挡掉（本来就会被 judge 拒），以及 playhub 未来若引入四字关键词会重新被吞（已由 §2.6.4 校验 3「playhub 自有词一律 ≤3 字」+ 测试钉死）。
 - 方案 A'（同 A 但只加 `FOUR_CHINESE`、不加排除集）：改动更小，但 `公布答案`/`提示`/`换一题`/`退出猜成语` 四个框架词的行为会与接龙抢（`公布答案` 四字，会被吞）。**不推荐**。
-- 方案 B（不改任何现有插件）：接受退化 —— 接龙进行中 61 个关键词全部失效，且每条都被回「请输入一个完整的四字成语」，等于接龙一开局这个群就不能用了。缓解：帮助文案提示「接龙进行中请先 `退出接龙`」。**无前缀方案下这是不可接受的产品状态**，只在用户拒绝方案 A 时兜底，并在 §8.6 记为已知限制。
+- 方案 B（不改任何现有插件）：接受退化 —— 接龙进行中 62 个关键词全部失效，且每条都被回「请输入一个完整的四字成语」，等于接龙一开局这个群就不能用了。缓解：帮助文案提示「接龙进行中请先 `退出接龙`」。**无前缀方案下这是不可接受的产品状态**，只在用户拒绝方案 A 时兜底，并在 §8.6 记为已知限制。
 - 方案 C：停用 `idiom_chain`，把 `成语接龙` 交给 playhub 重写。代价：等于重做 LLM 判定链路（`judge.py` 的 prompt + 校验 + 容错），并与 `chat_summary`/`personality` 的 LLM 配置耦合，约 +2 人日；且用户现有接龙数据/习惯迁移有成本。不推荐。
 - **结论：方案 A 是唯一既能保住 47 项又不退化接龙的选择；因为要改 `plugins/idiom_chain/`（不在禁改列表里，但属现有插件），把它列为 §9 第一问，未获批前按方案 B 上线并在帮助文案里提示。**
 
@@ -1063,7 +1064,7 @@ CREATE TABLE IF NOT EXISTS audit (
   at     INTEGER NOT NULL,
   room   TEXT,
   actor  TEXT,
-  action TEXT NOT NULL,                      -- cmd:结婚 / evt:join / sched:daily_quiz / err:quiz
+  action TEXT NOT NULL,                      -- cmd:结婚 / evt:join / sched:salary / err:quiz
   target TEXT,
   result TEXT NOT NULL DEFAULT 'ok',         -- ok/denied/failed
   detail TEXT                                -- JSON，禁止写消息正文
@@ -1168,7 +1169,7 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | `签到` | `打卡` | daily | 无 | 否 | 低 | 是（次数+冷却+连签） | 否 | `player` `wallet` `wallet_ledger` `daily_counter` `cooldown` `kv` | 新写（**连签第 7 天产钻石**，见 §4.4） |
 | 2 | `点歌` | `点唱` | music | 歌名/关键词 | 是 | 低 | 是（冷却+发歌队列） | 否 | `cooldown` `audit` `kv`(缓存) | 新写（外部源，见 §8） |
-| 3 | `抽签` | `求签` | daily | 无 | 否 | 低 | 是（每日 1 次） | 否 | `daily_counter` `wallet` `wallet_ledger` `kv` | 新写（签文库；**上上签产钻石**，见 §4.4） |
+| 3 | `抽签` | `求签` | daily | 无 | 否 | 低 | 是（每日 1 次） | 否 | `daily_counter` `wallet` `wallet_ledger` `kv` | 新写（签文库 `fortune.jsonl`；**上上签产钻石**，见 §4.4）；附 `解签`（当天抽过签才回释义，不发币、不限次、跨天失效） |
 | 4 | `切磋` | `比武` | duel | `@对象` / `同意` / `拒绝` | 是 | 低 | 是（待应战态） | 是（10 min 清超时） | `game_state` `wallet` | 新写（**不联动监狱/医院**，状态存 `game_state`，不写 `jail`、不建临时婚姻） |
 | 5 | `黄历` | `老黄历` | daily | 偏移日（`明天`/`昨天`） | 否 | 低 | 否（纯函数） | 否 | `almanac.jsonl` | 新写 |
 | 6 | `礼物` | `送礼` | social | `@对象` + 物品 | 是 | **高** | 是（背包） | 否 | `inventory` `item_def` `lottery_draw` `audit` | 新写（见 §4.3） |
@@ -1197,7 +1198,7 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 29 | `猜动漫` | — | quiz | 无 | 否 | 低 | 是 | 是 | 同上 | 新写（独立题库） |
 | 30 | `猜国漫` | — | quiz | 无 | 否 | 低 | 是 | 是 | 同上 | 新写（**独立题库，与 29 不共用**） |
 | 31 | `关系卡` | — | social | `@对象`（可选，省略取自己） | 否 | 低 | 否（读关系） | 否 | `pair` `baby` `player` | 新写 |
-| 32 | `求财神` | `拜财神` | daily | 无 | 否 | 低 | 是（每日 1 次） | 否 | `daily_counter` `wallet` `fortune.jsonl` | 新写 |
+| 32 | `求财神` | `拜财神` | daily | 无 | 否 | 低 | 是（每日 1 次） | 否 | `daily_counter` `wallet` `wealth.jsonl` | 新写 |
 | 33 | `小黑屋` | — | moderation | `@对象 分钟` / `解除 @对象` / `列表` | 是 | 低 | 是（`jail`） | 是（5 min 到期解禁） | `jail` `audit` | 新写（**软禁言**，无 kick/mute 能力；设置/解除**需 owner/admin 门禁**） |
 | 34 | `黑名单` | — | moderation | `加/删/列 @对象` | 是 | 低 | 是（`blocklist`） | 否 | `blocklist` `audit` | 新写（增加/移除**需 owner/admin 门禁**） |
 | 35 | `开宝箱` | `宝箱` | lottery | 箱型（`铜`/`银`/`金`） | 否 | 低 | 是（背包/钥匙） | 否 | `inventory` `item_def` `lottery_draw` `wallet_ledger` | 新写（**金箱 1/8 概率 +2 钻石**，见 §4.4） |
@@ -1211,22 +1212,22 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 43 | — | — | — | 进群欢迎（事件，无触发词） | — | — | 现有插件持有 | 否 | `group_notice` 自有 | **复用 `group_notice`**（`default_enabled:false`，需在控制台启用）；playhub 只记 `invite_daily.joins` |
 | 44 | — | — | — | 退群监控（事件，无触发词） | — | — | 现有插件持有 | 否 | `group_notice` 自有 | **复用 `group_notice`** 的 leave 模板；playhub 只记 `leaves`/`kicked` |
 | 45 | `改名` | — | groupstat | `开` / `关` | 是 | 低 | 是（`kv` + `member_seen`） | 是（每日巡检一次） | `member_seen` `nickname_log` `group_members()` | 新写（群管理开关，**需 owner/admin 门禁**；v1 写作「改名提醒」，词形改短） |
-| 46 | — | — | app | 面板「定时任务」+ playhub 动作 | — | — | 否 | 是（核心） | `scheduled_tasks.json`（框架侧） | 新写（**只声明动作**；群推送配置与启停需 owner/admin 门禁 + `plan_id/revision` 批准计划，见 §4.2 与 §7） |
+| 46 | — | — | 框架控制台 | 控制台「定时任务」页的定时文本任务 | — | — | 否 | 否 | `scheduled_tasks.json`（框架侧） | 复用框架控制台定时文本任务，不写新代码（playhub 不声明 `scheduled_actions`，不做批准计划；见 §4.2） |
 | 47 | `聊天` | — | — | `开` / `关` | 是 | 中 | 现有插件持有 | 否 | `mention_chat` `personality` `chat_summary` | **复用**；playhub 只提供 `聊天 开/关`（写 `kv` 开关，是否生效由 `mention_chat` 侧判断——**未核实其是否有开关配置**，见 §4.3） |
 
 **触发词账**（与 §2.6.4 的 69 词校验域对齐，测试断言词数一致）：
 
 | 项 | 词数 | 说明 |
 |---|---|---|
-| playhub 自有主词 | 43 | 表内 42 个功能项各 1 个（第 40 项并入 `宝宝`，第 37/43/44/46 项无触发词 → 47 − 5 = 42），再加本批新增的 `帮助`（`business.help`）1 个 → 43 |
+| playhub 自有主词 | 44 | 表内 42 个功能项各 1 个（第 40 项并入 `宝宝`，第 37/43/44/46 项无触发词 → 47 − 5 = 42），再加本批新增的 `帮助`（`business.help`）1 个 → 43；第 4 批再加 `解签`（`daily.fortune_explain`，归第 3 项抽签）→ 44 |
 | playhub 自有别名 | 18 | `打卡` `点唱` `求签` `比武` `老黄历` `送礼` `求婚` `运势` `缘分` `抽盲盒` `情话` `榜单` `猜歌` `猜谜` `拜财神` `宝箱` `找不同` `邀请榜` |
-| **playhub 自有合计** | **61** | 全部 ≤3 字，无四字中文（§2.6.4 校验 3） |
+| **playhub 自有合计** | **62** | 全部 ≤3 字，无四字中文（§2.6.4 校验 3） |
 | 复用框架词 | 4 | `提示` `换一题` `公布答案` `结束`（`退出猜成语` 为兼容别名） —— quiz 引擎的子命令，**不注册、不占自有词**；由框架表（`text.py:8-9`）放行进插件，playhub 只在 `quiz_round` 有未结束对局时消费（见 §2.7 冲突 2） |
 | 框架表其余 4 个中文词 | 4 | `成语接龙` `合并接龙` `退出接龙` `看图猜成语` —— 归 `idiom_chain` / `picture_idiom`，playhub 不碰 |
-| **全局唯一性校验域** | **61 + 8 = 69** | playhub 61 与新注册框架 8 个中文词两两不重；2 个斜杠词（`/help` `/看图猜成语`）不与中文词冲突 |
+| **全局唯一性校验域** | **62 + 8 = 70** | playhub 62 与新注册框架 8 个中文词两两不重；2 个斜杠词（`/help` `/看图猜成语`）不与中文词冲突 |
 | 表内不注册但需在帮助文案出现的词 | 8 | `成语接龙` `合并接龙` `退出接龙` `看图猜成语` `提示` `换一题` `公布答案` `退出猜成语`（都不进 playhub 的关键词表，只由帮助文案列出；其中 4 个是 quiz 子命令） |
 
-统计：共 **47 项** —— 新写 **43 项**、复用 **4 项**（37/43/44/47）；其中 **5 项不占触发词**（37/40/43/44/46）。新增触发词 61 个（43 主词 + 18 别名）。
+统计：共 **47 项** —— 新写 **43 项**、复用 **4 项**（37/43/44/47）；其中 **5 项不占触发词**（37/40/43/44/46）。新增触发词 62 个（44 主词 + 18 别名）。
 
 第 1 批追加第 61 个词 `帮助`（动作 `business.help`）：`/help` 由各插件各自处理、框架不为它做聚合，playhub 不能共用，因此单列一个整词。
 
@@ -1240,35 +1241,274 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 猜成语（文字） | **新写** | 与 `idiom_chain`（接龙）和 `picture_idiom`（看图）都不同：这是"文字提示 → 抢答"的竞猜，共用 `quiz` 引擎。`picture_idiom` 作为竞猜引擎的**状态机参考实现**（`plugins/picture_idiom/__init__.py:19-20` 的命令集、`:48-57` 的运行数据目录写法）。 |
 | 其余 43 项 | **新写** | `plugins/` 下现有插件清单中无对应实现（`anti_recall*` `chat_records` `chat_summary` `echo` `friend_auto_accept` `group_memory` `group_notice` `growth` `id_responder` `idiom_chain` `image_*` `member_identity` `mention_chat` `personality` `picture_idiom` `voice_reply`） |
 
-### 4.2 定时动作清单
+### 4.2 后台定时动作（插件自管线程，2026-11-06 定）
+**定案**：第 4 批的 5 个后台动作由 playhub **自带的一个后台线程**执行，节奏照抄 `plugins/growth/__init__.py:35-66`（`threading.Event` + daemon 线程 + `stopped.wait()`）。**不**走控制台 `scheduled_tasks`、**不**在 `plugin.json` 注册 `scheduled_actions`、**不**做群内「推送」批准命令、**不**做 `plan_id/revision` 批准契约（原 v3 门禁方案整段作废）。第 46 项「定时推送」直接用框架控制台的定时文本任务，playhub 不写代码。原清单里的 `daily_quiz`、`daily_almanac`、`daily_report`、`space_refresh` **不做**，也不在 47 项之内（直接删除）；第 46 项只是用户自己在控制台配的定时文本，与 playhub 无关。
 
-声明位置：`plugin.json` 的 `scheduled_actions`（键名与校验见 `wxbot_framework/scheduled_actions.py:17-53`：最多 16 项，`id` 匹配 `^[a-z][a-z0-9_]{0,63}$`，`method` 匹配 `^[a-z][a-zA-Z0-9_]{0,63}$` 且不允许下划线开头，`fields` ≤16，类型仅 `text/textarea/chat/integer/boolean`）。**插件不能自建任务，用户在控制台建**（`wxbot_framework/scheduled_tasks.py:26-47`，任务存 `<工作区>/.runtime/scheduled_tasks.json`）。
-
-| 动作 id | label | 回调 | 字段 | 用途 |
+| # | 动作 | 节奏 | 发群消息 | 受哪个开关 |
 |---|---|---|---|---|
-| `daily_quiz` | 每日出题 | `scheduled_daily_quiz` | `chat`(必) `text`(类目,可选) | 每天定时开一局竞猜 |
-| `daily_almanac` | 每日黄历/星座 | `scheduled_daily_almanac` | `chat`(必) | 早报 |
-| `daily_report` | 群昨日简报 | `scheduled_daily_report` | `chat`(必) | 活跃/潜水 top |
-| `pay_salary` | 发雇佣工资 | `scheduled_pay_salary` | 无 | 遍历 `pair:employ` 发币 |
-| `nickname_watch` | 改名巡检 | `scheduled_nickname_watch` | `chat`(必) | 快照比对 |
-| `quiz_gc` | 收题与清理 | `scheduled_quiz_gc` | `integer`(超时秒,可选) | 收超时题、清幂等/审计 |
-| `space_refresh` | 群空间刷新 | `scheduled_space_refresh` | `chat`(必) | 刷新聚合缓存 |
+| 1 | 改名巡检 `rename` | 每天 1 次，本地 10:00–22:00 窗口内 | **是**（唯一会发消息的动作） | `groupstat.rename_watch`，**读不到 = 开**，`改名 关` 关 |
+| 2 | 关系超时收尾 `expire` | 每个 tick | 否 | 无（与婚姻子命令里的惰性收尾同一函数） |
+| 3 | 收题与清理 `gc` | 收题每个 tick；清 `idem`/`audit` 每天 1 次（04:00 后） | 否 | 无 |
+| 4 | 发工资 `salary` | 每天 1 次（00:05 后），补发最多 3 天 | 否 | `feature.employ`（`switches.is_on`，读不到 = 关） |
+| 5 | 周榜发银箱 `chest` | 每周 1 次（周一 00:10 后，本周内任何一天都可补） | 否 | 无 |
 
-7 个动作 ≤16 合规。
+#### 4.2.1 模块与签名
 
-定时回调约束（`docs/development/plugins.md:92` 与 `plugins.py:304-336`）：返回值必须为真值（否则记任务失败）；与消息回调共享同一把锁（`callback_lock(timeout=2)`）→ 回调必须快，发消息受 allowlist 限制（`plugins.py:46-47`）。
+新文件 `plugins/playhub/scheduler.py`（放在包根，和 `app.py` 平级）。理由：它要调 `engines/social`、`engines/quiz`、`engines/groupstat`、`engines/ranking`，放进 `core/` 会让 core 反向依赖 engines；它也不是命令引擎，不该进 `engines/`、不进 `build_engines()`。
 
-**v3：群推送类任务的配置入口必须带门禁（正式方案，取代"面板直接存参数"）**
+```python
+# plugins/playhub/scheduler.py
+FIRST_DELAY_SECONDS = 300      # 首次延迟：等微信连上、群成员缓存就绪
+FIRST_DELAY_JITTER = 60        # 首次延迟再加 [0, 60) 秒随机（rng 注入），避免和 growth 等插件同一秒醒
+TICK_SECONDS = 600             # tick 间隔 10 分钟
+JOIN_TIMEOUT_SECONDS = 10      # on_unload 等线程退出的上限
 
-现有 `scheduled_tasks.py` 的"保存/启停"没有可信的配置人微信身份，`on_schedule()` 回调也不携带人类配置者 —— 在面板里加一个 `wxid` 字段解决不了"这个人现在还是不是管理员"。因此：
+RENAME_WINDOW = (10, 22)       # 本地小时 [10, 22)；窗口外不播报，也不补
+SALARY_AFTER = (0, 5)          # 本地 00:05 之后才发当天工资
+SALARY_CATCHUP_DAYS = 3        # 停机后最多补 3 天（含今天）
+CHEST_AFTER = (0, 10)          # 周一 00:10 之后发上周银箱
+CHEST_TOP_N = 10
+GC_AFTER = (4, 0)              # 每天 04:00 后清 idem / audit
+IDEM_RETENTION_DAYS = 30
+AUDIT_RETENTION_DAYS = 180
+PURGE_BATCH = 5000             # 每个事务最多删这么多行，单个写锁持有时间可控
+GLOBAL_ROOM = "*"              # kv 里全库级游标的 room 值（沿用 item_def.world='*' 的写法）
+ACTIVE_ROOM_DAYS = 7           # 只给最近 7 天在 activity_daily 有记录的群播报改名
 
-1. **批准在群内完成**：管理员在群里发指令（经 `ctx.group_member_role()` 门禁），发布一条推送计划 —— `plan_id`、`room`、`action`、参数、启用状态、`revision`、`approved_by` 全部写入现有 `kv`。
-2. **面板只绑身份**：控制台任务只存 `plan_id` + `revision`，不存可独立生效的业务参数；执行时先读已批准计划。改面板原始参数**不能扩大计划范围**（参数以计划为准）。
-3. **revision 失效**：计划被停用或修订后，旧 `revision` 立即失效，指向旧 revision 的任务不再发送。
-4. **执行前重查角色**：每次触发都重读批准者当前的缓存角色，`member`/`unknown` 一律停发并写拒绝审计（`audit.result='denied'`）。批准者退群、被降权、角色缓存缺失都按失败关闭处理。
-5. **例外**：`quiz_gc`、`space_refresh` 这类内部维护任务不属于"群推送配置"，不伪装成群推送、也不要求虚构一个管理员身份。
+@dataclass(frozen=True)
+class TickReport:
+    renamed: int = 0          # 播报出的改名处数
+    expired: int = 0          # 收掉的超时请求/离婚单
+    quiz_closed: int = 0
+    idem_purged: int = 0
+    audit_purged: int = 0
+    salary_paid: int = 0      # 成功发放的 (pair, day) 数
+    salary_skipped: int = 0   # 余额不足 / 数据坏 / 开关关
+    chests: int = 0
+    errors: int = 0
 
-**不能宣称**"现有面板保存时已完成群角色门禁" —— 面板侧没有可信身份，门禁只在群内批准与执行前重查这两处生效。
+class Scheduler:
+    def __init__(self, *, ctx, root: Path, now_fn=clock.now_ts, rng: random.Random | None = None,
+                 logger=None, store_factory=Store, sleep_event: threading.Event | None = None) -> None: ...
+    def start(self) -> None                      # 起 daemon 线程，名字 "playhub.scheduler"
+    def stop(self, timeout: float = JOIN_TIMEOUT_SECONDS) -> bool   # set + join；返回线程是否已退出
+    def tick(self, now: int | None = None) -> TickReport            # 同步跑一轮，测试直接调它
+
+# 每个动作都是模块级函数，只吃 Store / conn，不碰线程，便于离线测：
+def run_rename(store: Store, ctx, room: str, now: int, *, send: Callable[[str, str], object]) -> int
+def run_expire(store: Store, social: SocialEngine, room: str, now: int) -> int
+def run_quiz_gc(store: Store, quiz: QuizEngine, now: int) -> int
+def run_purge(store: Store, now: int) -> tuple[int, int]            # (idem 删除数, audit 删除数)
+def run_salary(store: Store, room: str, day: str, now: int) -> tuple[int, int]   # (发放数, 跳过数)
+def run_chest(store: Store, room: str, week: str, now: int) -> int
+def is_due_daily(last: str | None, today: str, local_hm: tuple[int, int], after: tuple[int, int]) -> bool
+def is_due_weekly(last: str | None, this_week: str, local_wd_hm: tuple[int, int, int], after: tuple[int, int]) -> bool
+```
+
+为实现上述函数需要改的现有代码（都是小改动，签名定在这里）：
+
+- `plugins/playhub/__init__.py`：把 `_runtime()` 里拼目录的那段（`:70-75`）抽成 `db_path_for(root: Path, account: str) -> Path`，前台和后台共用同一套路径规则；`on_load` 末尾 `self._scheduler = Scheduler(ctx=ctx, root=root, logger=...)` 并 `start()`；`on_unload` 先 `self._scheduler.stop()` 再关前台连接。
+- `engines/social.py`：新增公开方法 `SocialEngine.expire_room(self, conn, room: str, now: int) -> int`，内部调 `_expire`（`:1249`）并返回收掉的条数；前台 `:481`、`:817` 两处不变。
+- `engines/quiz.py`：`_sweep(..., release_slots: bool = True)`、`sweep(conn, now=None, *, release_slots=True)`；后台传 `release_slots=False`（理由见 4.2.4 收题）。
+- `engines/groupstat.py`：新增 `RENAME_SNAPSHOT_KEY = "groupstat.rename_snapshot"`、`watch_on(conn, room) -> bool`（读不到 → `True`；值在 `0/off/false/no/disabled` → `False`；读失败 → `False`，失败不播报）、`diff_names(prev: dict[str, str], rows: list[tuple[str, str]]) -> list[tuple[str, str, str]]`；`_scan_now`（`:245-285`）改用同一快照基线（理由见 4.2.4 改名）。`改名 开/关` 的写法（`:226-228`）不变，开卡文案不变。
+- `core/wallet.py` 不改；工资用 `debit`/`credit` 两条分录。
+
+#### 4.2.2 线程与 SQLite（问题 A）
+
+**后台线程自建一条独立的 `Store` 连接，不与 `on_message` 共享连接，也不自建锁。**
+
+- 依据：`Store` 注释写明「`check_same_thread=False` 只是给线程内迁移留余地，运行时仍单线程使用」（`core/store.py:34`）；同一条 `sqlite3.Connection` 在两个线程里交错 `BEGIN IMMEDIATE`，第二个会直接报 `cannot start a transaction within a transaction`，`tx()`（`store.py:100`）的提交/回滚边界也会串。若改成「共享连接 + 插件内锁」，需要把前台所有 `store.tx()` 调用点都包进锁，侵入每个引擎。
+- 可行性：`schema.sql:5` 是 `PRAGMA journal_mode = WAL;`，`migrate()`（`store.py:70` 的 `executescript`）执行后 WAL 持久写进库文件，之后所有连接都是 WAL：读不阻塞写、写不阻塞读。写写互斥靠 `BEGIN IMMEDIATE` + `busy_timeout`（`store.py:40`，默认 `timeout=3.0` → 3000 ms）。
+- 约束（后台必须守）：
+  1. **一个事务只做一个群的一个动作**（工资再细到一个 `pair`、一天），写锁持有时间是毫秒级，前台最坏等一个后台小事务，远小于 3 s。
+  2. 后台事务里**不调任何微信接口**（不读快照、不发消息）。改名巡检的顺序是：事务外读快照 → 事务内比对并落库 → 事务外发消息。
+  3. 拿锁超时（`sqlite3.OperationalError: database is locked`）只跳过这个群这个动作，**不写 last_run**，下个 tick 重来；所有写都幂等（4.2.5），重来不会重复。
+  4. 连接在后台线程里创建、在后台线程退出时关闭（`finally: store.close()`），不跨线程传递。
+- `game_slot` 是带 `threading.Lock` 的进程内表（`wxbot_framework/game_slot.py:21`），跨线程调用本身安全，但有时序问题，见 4.2.4 收题。
+
+#### 4.2.3 账号与群（问题 B）
+
+- **账号**：每个 tick 开头读一次 `ctx.members.account`，与前台 `_runtime()`（`plugins/playhub/__init__.py:55`）同一来源。`MemberStore.from_config` 要求配置里有固定的 `wechat_account`（`wxbot_framework/members.py:173-174`），所以这个值在启动时就有，不依赖首条消息。读到空串、`CapabilityError`（没配成员目录）或非字符串 → 本 tick 什么都不做，只在第一次记一条 warning（与前台 `_warned` 同口径）。账号变了（面板换号）→ 关掉旧连接、按新账号路径开新连接；**不**遍历磁盘上其它账号的库（失败关闭：只处理当前登录账号）。
+- **库文件**：`db_path_for(root, account)`，与前台完全同一路径；库文件还不存在 → 本 tick 跳过（前台还没处理过任何消息，不替它建库）。存在则打开并 `migrate()`（幂等）。
+- **群**：不从框架取群列表（`PluginContext` 不暴露 `chat_allowlist`），而是从本库已有数据推出来，每个动作各查各的：
+
+| 动作 | 群集合 SQL（全部参数化） |
+|---|---|
+| rename | `SELECT DISTINCT room FROM activity_daily WHERE day >= ?`（`day_of(now) - 7 天`） |
+| expire | `SELECT DISTINCT room FROM kv WHERE key LIKE 'divorce:%' UNION SELECT DISTINCT room FROM pair WHERE state = 'pending'` |
+| salary | `SELECT DISTINCT room FROM pair WHERE kind = 'employ' AND state = 'active'` |
+| chest | `SELECT DISTINCT room FROM activity_daily WHERE day BETWEEN ? AND ?`（上周一~上周日） |
+| gc | 不分群（`quiz._sweep(room=None)` 本来就是全库，`idem`/`audit` 按 `at` 删） |
+
+  前台消息只有在 `chat_allowlist` 内才会分发给插件（`wxbot_framework/runtime.py:144-161`，`_emit` 里 `allowed = self.config.get('chat_allowlist', [])`；文本分发见 `:229-239`），所以有活跃记录说明该群至少曾在白名单内。「7 天活跃」保留作减负，**不再**承担白名单职责；白名单由下面的 `ctx.chat_allowed` 判。
+
+**框架只读白名单接口（用户选方案 A，2026-11-06 定）**
+
+- 签名：`PluginContext.chat_allowed(self, chat_id: str) -> bool`。语义与 `runtime.py:144` 一致：白名单为空 = 全部允许；非空时 `chat_id in allowed`；`chat_id` 不是非空字符串 → `False`；读取白名单抛异常 → `False`（失败关闭）。
+- 白名单从哪里来：`PluginContext.__init__`（`wxbot_framework/sdk.py:475-486`）现在只拿到本插件的 `options`（`:478` 的 `self.config = MappingProxyType(copy.deepcopy(options))`，是装载时的深拷贝，拿不到全局 `chat_allowlist`）。照 `plugin_active` 的先例（`:486` 存回调、`:488-489` `def plugin_is_active(self, name):` 调回调）新增关键字参数 `chat_allowlist=None`（一个无参 callable，返回当前白名单列表）。`PluginManager._prepare`（`wxbot_framework/plugins.py:195-202`）创建 context 时传 `chat_allowlist=lambda: list(self.config.get("chat_allowlist", []) or [])`。
+- 热更新：`PluginManager.config` 由 `store.load()` 初始化（`plugins.py:152`），面板保存后 `BotApplication.apply_config` 执行 `self.plugins.config = dict(config)`（`runtime.py:61`，注释「插件管理器自己留了一份配置拷贝，不刷新的话 enabled/群白名单还是旧的。」），`reload` 也会重读（`plugins.py:279`）。回调在**调用时**读 `self.config`，所以已装载插件不用重载就能看到新白名单，和 `runtime._emit` 看到的是同一次保存。不在 `__init__` 里拷贝列表，就是为了拿到热更新。
+- 未注入回调（单测里直接 `PluginContext(...)` 构造）→ 返回 `True`，等同「白名单为空」，不破坏现有测试。playhub 侧用 `getattr(ctx, "chat_allowed", None)`：框架没有这个方法（旧版本）→ **不播报**（失败关闭）。
+- `run_scheduled` 里 `copy.copy(record.context)`（`plugins.py:328`）是浅拷贝，回调共享，不受影响；控制台定时任务仍走 `ScheduledService` 自己的白名单（`plugins.py:46`），两者口径相同。
+
+框架改动清单（交 builder）：
+
+| 文件 | 函数 | 改动 |
+|---|---|---|
+| `wxbot_framework/sdk.py` | `PluginContext.__init__` | 加关键字参数 `chat_allowlist=None`，存为 `self._chat_allowlist` |
+| `wxbot_framework/sdk.py` | 新增 `PluginContext.chat_allowed(self, chat_id)` | 按上面的语义实现，放在 `plugin_is_active` 旁边 |
+| `wxbot_framework/plugins.py` | `PluginManager._prepare` | 构造 `PluginContext` 时传 `chat_allowlist=lambda: list(self.config.get("chat_allowlist", []) or [])` |
+| `docs/development/plugins.md` | ctx 方法表（`ctx.send_text` 那一行附近，约 `:100-102`） | 补一行 `ctx.chat_allowed(chat_id)`：后台主动发消息前必须先查 |
+
+框架测试：现有直接构造 `PluginContext` 的测试有 `tests/test_mentions.py`、`tests/test_image_sdk.py`、`tests/test_text_pacing.py`、`tests/test_management_integration.py` 等（共 10 个文件，见 `grep -rln "PluginContext(" tests`），新参数是可选关键字，它们不用改；构造 `PluginManager` 的有 `tests/test_management_integration.py`、`tests/test_media_anti_recall.py`。新增断言建议放 `tests/test_management_integration.py`：① 不注入回调 → `chat_allowed("x@chatroom")` 为真；② 注入 `lambda: []` → 真；③ 注入 `lambda: ["a@chatroom"]` → `a` 真、`b` 假、`""` 假；④ 回调抛错 → 假；⑤ 经 `PluginManager` 装载后改 `manager.config["chat_allowlist"]`，同一个 context 立刻看到新值。
+
+#### 4.2.4 五个动作
+
+**① 改名巡检 `run_rename`**
+
+- 到期：`watch_on(conn, room)` 为真，且 `is_due_daily(kv[room, 'sched.last.rename'], today, 本地时分, (10, 0))` 且本地小时 < 22。窗口外不播（不在半夜发群消息），不补发；改名会累积到下一次巡检里一起报，不丢。
+- 输入：`ctx.group_members(room)`（经 `_member_rows` 的同款解析，`groupstat.py:286-308`）。返回 `None`（缓存未就绪，`docs/design/playhub.md` 第 4 批踩坑①）或抛 `RuntimeError("微信尚未连接")`（`sdk.py:268-269` 的 `_manage`）→ **本群本 tick 跳过、不写 last_run**，下个 tick 再试。去掉 `uid == account`（机器人自己）。
+- **比对基线改为快照 kv，不用 `member_seen.nickname`**。原因：前台每条人话都会经 `activity.record` 把 `member_seen.nickname` 覆写成消息里的 `sender_wechat_name`（`core/activity.py:52-58` 的 `CASE WHEN excluded.nickname <> '' THEN excluded.nickname`；昵称来源见 `engines/__init__.py:79-83`），而快照行取的是群昵称优先（`groupstat.py:301` 的 `row.get("nickname") or row.get("wechat_name")`）。两边口径不同：设了群昵称的人每发一句话，`member_seen` 就被改回微信名，次日巡检又会报一次「微信名 → 群昵称」，天天误报；反过来，改了名又说过话的人会被静默吞掉。基线 `kv(room, 'groupstat.rename_snapshot')` 存 `{uid: 名字}` JSON，只由巡检（后台与 `改名 现在`）写。
+- 首次（快照 kv 不存在）：只建基线，不播报，写 last_run（**用户已接受，2026-11-06**：改名默认开上线后，已有群第一次巡检只建快照，第一天不会有任何改名播报，也不会上线就刷屏；`改名 现在` 在无基线时同样只建基线并回「已建立改名基线，下次起开始比对」）。
+- 事务内：读基线 → `diff_names(prev, rows)`（只报两边都非空且不同的；新进群的人只进基线不报；不在新快照里的人从基线移除）→ 每处变化 `activity.record_nickname_change(...)`（写 `nickname_log` 并同步 `member_seen`）→ 写新基线 → 写 `sched.last.rename = today` → 写一行 `audit(action='sched:rename', result='ok', detail={"changes": n})`。提交。
+- 事务外发消息：`changes` 非空时 `ctx.send_text(room, text)`（`sdk.py:512`）。文案用 `render.result("", "🔍 改名播报", rows, at_sender=False)`，前 10 处逐条 `旧 → 新`，超出写「还有 N 处没列出来」，`render.limit` 兜长度。
+- 失败处理：发送抛异常或返回 `False` → 记 warning + 补一行 `audit(action='sched:rename', result='failed', detail={"error": 类名})`，**不重试**。理由：`send_text` 分段发送时可能前段已发出（`sdk.py:144` 的「前面部分可能已发送」），重试会重复刷屏；漏一条改名播报代价很低，`nickname_log` 里有记录。这是「至多一次」语义，有意为之。
+- 微信连接切换/未登录：`ServiceFacade.send_text` 在未连接时抛 `RuntimeError("微信尚未连接")`（`sdk.py:119-120`），按上面的发送失败处理。`ctx.send_text` 不带 `expected_session`，快照与发送之间若重连，消息会走新连接；同一进程只有一个固定账号（见 4.2.3），新连接是同一账号，不会串号。
+- 白名单：控制台定时任务的发送会被白名单拦（`wxbot_framework/plugins.py:46-47`），而 `ctx.send_text` 直连 `ServiceFacade`，**没有白名单检查**。因此发送前必须 `ctx.chat_allowed(room)`（4.2.3）。为假（或框架没有该方法）→ **照常比对、写 `nickname_log` 与新快照、写 last_run，只是不播报**，并记 `audit(action='sched:rename', result='skipped', detail={"why": "not_allowed", "changes": n})`。照写快照的理由：群被移回白名单后，第一次巡检只报移回之后的改名，不会一次补报一堆旧改名。白名单判定放在事务提交之后、发送之前，用的是当下的值。
+- 只有本动作发消息；其余四个动作一律静默，结果只进 `audit` 与日志。
+
+**② 关系超时收尾 `run_expire`**
+
+- 每个 tick 对每个候选群开一个 `store.tx()`，调 `social.expire_room(conn, room, now)`（即 `SocialEngine._expire`，`engines/social.py:1249-1282`）：pending 超 24 h 置 `ended`，离婚单过 `deadline` 的结束婚姻并全额退 `DIVORCE_COST`。
+- 幂等：离婚单 kv 行在同一事务里被 `_drop_divorce` 删除；退款 `operation_key=f"divorce_timeout:{pair_id}"`（`:1278`）撞 `UNIQUE (room, operation_key, posting_no)`（`schema.sql:61`）会抛 `DuplicatePosting`，整群事务回滚、记 warning、算本群完成（钱已退过）。前台惰性收尾与后台同时跑时，`BEGIN IMMEDIATE` 保证只有一方看得到那条离婚单。
+- 不发消息（与现有惰性收尾一致）。
+
+**③ 收题与清理 `run_quiz_gc` / `run_purge`**
+
+- 收题：每个 tick 一个事务 `quiz.sweep(conn, now, release_slots=False)`。**后台不释放 `game_slot`**：前台 `start()` 先 `claim_slot`（`engines/quiz.py:239`）再进事务 `_sweep(conn, now, room=room)`（`:246`）；若后台恰好在两者之间提交并 `release_slot(room, SLOT_OWNER)`（`:478`），会把前台刚占的新局槽位放掉，接龙/看图就能插进来。槽位本身带 `ttl=ROUND_SECONDS`（300 s）会自己失效，后台不必管。
+- 清 `idem`：`DELETE FROM idem WHERE rowid IN (SELECT rowid FROM idem WHERE at < ? LIMIT 5000)`，阈值 `now - 30 天`，走 `idem_by_age`（`schema.sql:323`），循环到删不满一批为止，每批一个事务、批间检查 `stopped`。保留 30 天的理由：消息级键 `<session_id>:<sequence>:<cmd>` 只需覆盖重投窗口（分钟级），事件键 `evt:<room>:<kind>:<uid>:<day>` 需要覆盖一天，本节的银箱键要覆盖一周；30 天对所有现有键都有富余，表仍很小。
+- 清 `audit`：同样分批，`at < now - 180 天`（`audit_by_room`/`audit_by_action` 都以 `at` 结尾，按 `id` 删）。保留半年的理由：`audit` 是关系操作与管理操作唯一的追溯来源（`engines/social.py:258` 的「关系操作必须可追溯」），婚姻、雇佣、小黑屋纠纷常在几个月后才被翻出来；180 天一年清两次，行数上限可控。`wallet_ledger` **不清**（钱的流水永久保留）。
+- 到期：`kv('*', 'sched.last.purge')` 不等于今天且本地时间 ≥ 04:00。删完写 last_run 和一行 `audit(room=NULL, action='sched:gc', detail={"idem": a, "audit": b})`。
+
+**④ 发工资 `run_salary`**
+
+- **谁付谁收**：雇主 = `pair.by_uid`。依据：`rel_propose` 插入时 `by_uid` 是发起人 `uid`（`engines/social.py:858-861` 的 `"VALUES (?, ?, ?, ?, 'pending', ?, ?)"`，第 5 个参数是 `uid`）；`rel_wage` 对 `uid == row["by_uid"]` 显示「<对方>：每日 N 金币」、对另一方显示「被 <by_uid> 雇佣」（`:927-930`），即发起「雇佣 @某人」的人是雇主。员工 = `_partner_of(row, by_uid)`（`:212-213`）。`low_uid/high_uid` 只是字典序排序（`:843` 的 `low, high = (uid, target) if uid <= target else (target, uid)`），与雇主身份无关。`by_uid` 为空或不在这对人里 → 跳过并记 `audit(result='failed', detail={"why": "bad_by_uid"})`。
+- 金额：`int(_meta(row).get("wage", WAGE_PER_DAY))`，`WAGE_PER_DAY = 20`（`:94`）；解析失败或 ≤0 → 跳过并审计。
+- 到期与天数：本地 00:05 之后；对每条 `active` 雇佣，应发日 = `[max(since 所在日 + 1, today - 2), today]` 中尚未发的日子（`SALARY_CATCHUP_DAYS = 3`）。成交当天不发，避免「雇了立刻发、发完就解雇」的刷币；停机超过 3 天的更早日子不补（当时开关和余额状态已不可知）。群开关 `switches.is_on(conn, room, "employ")`（`core/switches.py:52`）当下为关 → 整群跳过，不写 last_run，不补发关掉期间的工资。
+- 每个 `(pair, day)` 一个事务：`ensure_player` 双方 → `debit(雇主, coin, wage, reason="salary_pay", operation_key=f"sched:salary:{pair_id}:{day}", posting_no=0, ref=str(pair_id))` → `credit(员工, coin, wage, reason="salary_income", 同一 operation_key, posting_no=1, ref=str(pair_id))`（`core/wallet.py:194-206`）→ `audit(action='sched:salary')`。
+- **雇主余额不足**：`debit` 抛 `Insufficient`（`wallet.py:283-285`）→ 回滚、当天不发、不记欠薪、不解除雇佣、不发群消息，只写 `audit(result='failed', detail={"why": "insufficient", "day": day})`。之后的补发窗口里若雇主有钱了，会按天补上（同一 op key，仍幂等）。员工余额溢出（`WalletError`，`wallet.py:223`）同样整笔回滚并审计。
+- 幂等：`DuplicatePosting` = 这天已发 → 回滚、计为已完成。整群所有 pair 都处理完后写 `kv(room, 'sched.last.salary') = today`，只用来快速跳过，正确性不依赖它。
+- 一天只发一次：每个 `(pair, day)` 对应唯一的 `sched:salary:<pair_id>:<day>`，同一天任意多个 tick 或重启都只能成功一次。
+
+**⑤ 周榜发银箱 `run_chest`**
+
+- 到期：`clock.week_of(now)`（`core/clock.py:36`）≠ `kv(room, 'sched.last.chest')`，且（今天不是周一，或本地时间 ≥ 00:10）。只发**上一周**；停机跨过整周的话，更早那周不补（周榜奖励时效性强，补发没有意义）。
+- 上周区间：取 `last_sunday_ts = now - (本地 weekday + 1) * 86400`，调 `ranking.top(conn, board="activity", room=room, period="week", now=last_sunday_ts, limit=20)`（`engines/ranking.py:86`）；`top` 内部走 `clock.range_of("week", now)`（`ranking.py:142`、`clock.py:55-56`），对上周日的时间戳正好得到「上周一 ~ 上周日」。周键 `week = clock.week_of(last_sunday_ts)`。
+- 过滤：去掉 `moderation.is_blocked(conn, room, uid)` 为真的人与机器人自己，再取前 10；不往后递补以外的规则，空榜什么也不发。
+- 一个群一个事务：`INSERT INTO idem (key, scope, at) VALUES (?, 'sched.chest', ?)`，`key = f"sched:chest:{room}:{week}"`（**不**用 `OR IGNORE`；撞主键 `IntegrityError` = 这周已发 → 回滚并写 last_run）→ 每人 `ensure_player` + `items.add(conn, room, uid, items.CHEST_SILVER, 1)`（`core/items.py:79`、`:192`）→ `kv(room, 'sched.last.chest') = week` → `audit(action='sched:chest', detail={"week": week, "uids": [...]})`。10 人要么全发要么全不发。
+- 不在群里播报（定案）。获奖者开背包或 `开宝箱` 时自然看到。
+
+#### 4.2.5 幂等键汇总（问题 D）
+
+| 动作 | 正确性来源（必须） | 快速跳过（可丢） |
+|---|---|---|
+| 改名 | 同一事务写 `nickname_log` + 新快照：再巡检时基线已是新名字，不会重报 | `kv(room,'sched.last.rename')=YYYY-MM-DD` |
+| 超时收尾 | 离婚单 kv 行同事务删除；退款 `divorce_timeout:<pair_id>` posting 0 | 无（每 tick 跑） |
+| 收题 | `closed_at IS NULL` 条件更新 | 无 |
+| 清理 | `DELETE ... WHERE at < ?` 天然幂等 | `kv('*','sched.last.purge')=YYYY-MM-DD` |
+| 工资 | `sched:salary:<pair_id>:<YYYY-MM-DD>`，posting 0 = 雇主扣、1 = 员工收 | `kv(room,'sched.last.salary')=YYYY-MM-DD` |
+| 银箱 | `idem.key = sched:chest:<room>:<YYYY-Www>`，与发箱同事务 | `kv(room,'sched.last.chest')=YYYY-Www` |
+
+`idem` 30 天保留期 ≥ 银箱键需要的 7 天，清理不会让一周内的重发变得可能。
+
+#### 4.2.6 节奏与补发（问题 E）
+
+- 首次延迟 `300 + rng.uniform(0, 60)` 秒（growth 用 600 s；这里更短是因为改名窗口与工资都按天判，晚 5 分钟无所谓，但要给微信连接和群成员缓存留时间）。之后每 600 s 一个 tick，`stopped.wait(TICK_SECONDS)` 返回真即退出。
+- 所有「今天」「本周」「本地时分」都由 `clock` 算（`clock.day_of`、`clock.week_of`、`clock._local` 同口径的 `datetime.fromtimestamp(now, clock.CN)`），SQL 里不出现 `date('now')`（`clock.py:3-5`）。`last_run` 存 kv，跨重启有效。
+- 补发规则：改名不补（窗口外跳过，累积到下次）；超时收尾与收题每 tick 跑，不存在补发；清理只跑一次当天；工资补最多 3 天（含今天）；银箱只补上一周。
+- tick 内顺序：gc（收题）→ expire → salary → chest → purge → rename。发消息的 rename 放最后，前面的写库都不依赖微信连接。
+
+#### 4.2.7 停线程、异常与日志（问题 F）
+
+- `on_unload`：`self._scheduler.stop()` → `stopped.set()` 后 `join(10)`；超时只记 warning（线程是 daemon，进程退出时不会卡住）。线程在每个群、每批删除之间检查 `stopped.is_set()`，最长退出时间约为一个小事务 + 一次 `send_text` 的文本等待。后台连接由线程自己在 `finally` 里关闭，`on_unload` 不碰它。框架在插件线程退出时调用 `on_unload`（`wxbot_framework/plugins.py:110-111`）；热重载期间新旧两份实例可能短暂各有一个后台线程，所有写都幂等，最多重复一次无害的读。
+- 异常收口三层：① 每个「群 × 动作」包一层 `try/except Exception`，记 `logger.exception("playhub 后台 %s 失败：room=%s", action, room)`，`TickReport.errors += 1`，不写 last_run，下个 tick 重来；② `tick()` 外层再包一层，保证循环不死；③ `start()` 里账号/开库失败只记一次 warning 并在下个 tick 重试。
+- 日志：logger 名 `Plugin.playhub`（即 `ctx.logger`，`sdk.py:479`）；每个 tick 只在 `TickReport` 有非零项时记一条 info 汇总，空 tick 不记；改名播报失败、余额不足这类业务失败记 info/warning 并进 `audit`（`action` 前缀统一 `sched:`，与 `schema.sql:330` 的注释一致），`detail` 只写结构化字段，不写消息正文与昵称以外的聊天内容。
+
+#### 4.2.8 测试要点（`tests/test_playhub_scheduler.py`，全部离线）
+
+用临时目录建 `Store`，注入 `now_fn`（固定时间戳，北京时间）、`rng=random.Random(0)`、假 `ctx`（`members.account`、`group_members(room)` 返回值/`None`/抛 `RuntimeError`、`send_text` 记录调用或抛错），直接调 `Scheduler.tick(now)` 或各 `run_*` 函数，不起线程。
+
+1. 改名：`kv` 无 `groupstat.rename_watch` 时视为开；`ctx.chat_allowed(room)` 为假时快照与 `nickname_log` 照写、`send_text` 0 次、`audit.result='skipped'`，随后改为真且无新改名 → 仍不发；假 `ctx` 没有 `chat_allowed` 属性 → 不发；值 `"0"` 时不巡检；首次只建快照不发消息；第二次快照改了一个名 → `nickname_log` +1、`send_text` 恰好 1 次且文本含「旧 → 新」；同一天再 tick → 不再发；`group_members` 返回 `None` → 不发、不写 last_run、快照不变；抛 `RuntimeError` 同上；本地 23:00 不发、次日 10:00 发且包含前一天的变化；`send_text` 抛错 → `audit.result='failed'`，快照已更新，不重试；前台写 `member_seen.nickname = 微信名` 后再 tick，不产生误报；机器人自己的 uid 不报。
+2. 超时收尾：造一条 `deadline` 已过的离婚单 → tick 后婚姻 `ended`、发起人退 `DIVORCE_COST`、kv 行消失；再 tick 余额不变；先调前台 `_expire` 再调后台，退款只有一笔。
+3. 收题：过期对局 `closed_at = expires_at`；后台 sweep 后 `game_slot` 里前台占的槽仍在（`release_slots=False`）。
+4. 清理：`idem` 31 天前的删、29 天前的留；`audit` 181 天前的删、179 天前的留；造 12000 行验证分批（每事务 ≤5000）；`wallet_ledger` 行数不变；同一天第二次 tick 不再执行。
+5. 工资：雇主 = `by_uid`（low/high 两种排序都测）；成交当天不发，次日发 20，雇主 −20、员工 +20，两条分录同一 `operation_key`、posting 0/1；同日多次 tick 只发一次；`meta.wage=50` 按 50 发；雇主余额不足 → 双方余额不变、`audit` 记 `insufficient`、雇佣仍 active；次日雇主有钱 → 补发前一天和当天；停机 5 天后只补最近 3 天；`feature.employ` 未设或为 `0` → 不发；`by_uid` 为空 → 跳过并审计。
+6. 银箱：周一 00:05 不发、00:10 后发；上周前 10 各 +1 `chest_silver`，第 11 名没有；本周的发言不计入；黑名单用户被剔除；同周再 tick 或删掉 `sched.last.chest` 后再 tick 都不重发（`idem` 拦）；周三首次启动仍补上周；停机两周只发最近一周；`send_text` 调用次数为 0。
+7. 线程：`start()` 后立刻 `stop()` 能在 1 s 内返回真；`tick` 内某个群抛异常，其它群照常处理且 `errors == 1`；账号为空时 `tick` 不开库、不抛异常。
+8. 并发：两个 `Store` 连同一库，一个持 `BEGIN IMMEDIATE` 不放，后台 tick 在 3 s 后放弃该群并不写 last_run，释放后下一 tick 完成。
+
+#### 4.2.9 钱包写序修复（交 builder，与 §4.2 同批）
+
+**问题**：`credit()`/`debit()` 先 `UPDATE wallet` 改余额（`core/wallet.py:215-219`、`:273-277`），再 `_write_ledger` 写分录（`:226`、`:288`）。分录撞 `UNIQUE (room, operation_key, posting_no)`（`schema.sql:61`）时抛 `DuplicatePosting`，但余额已经改了。调用方在 `with store.tx()` 里接住它并 `return`（例：`engines/social.py:1072-1074` 的 `except DuplicatePosting:` → `return self._no("这次送礼已经记过账了。", ...)`），事务正常提交，结果是**余额变了，却没有流水**。同类接住点还有 `social.py:657/694/791/1199`、`daily.py:444/515/631`、`quiz.py:443`、`lottery.py:155/212/321`，逐个改调用方不现实。
+
+**定案：先按 UNIQUE 查重，再在 `SAVEPOINT` 里做「UPDATE 余额 + 写分录」。**
+
+```python
+def _posting_exists(conn, room: str, operation_key: str, posting_no: int) -> bool
+    # SELECT 1 FROM wallet_ledger WHERE room = ? AND operation_key = ? AND posting_no = ?（走 UNIQUE 索引）
+
+# credit / debit 的新顺序（签名不变，core/wallet.py:194-206、:250-262）：
+#  1. 参数校验（不变）
+#  2. if _posting_exists(...): raise DuplicatePosting(...)      ← 余额一分没动
+#  3. conn.execute("SAVEPOINT wallet_posting")
+#  4. 条件 UPDATE（不变：credit 的上限判断、debit 的 balance >= ?）→ rowcount 0 的分支照旧抛
+#  5. after = _require_balance(...)；_write_ledger(..., balance_after=after)
+#  6. 成功：RELEASE wallet_posting；任何异常：ROLLBACK TO wallet_posting; RELEASE wallet_posting; 原样上抛
+```
+
+- 结果：抛 `DuplicatePosting`（以及 `Insufficient`、`WalletError`、`WalletUninitialized`）时，本次调用对 `wallet` 和 `wallet_ledger` **都没有改动**；调用方接住异常后提交事务，也提交不出半笔账。调用方代码一行不改。
+- `balance_after` 仍然取 UPDATE 之后读到的真实余额（第 5 步），计算方式不变，`CHECK (balance_after >= 0)`（`schema.sql:53-54`）照旧成立。
+- 为什么查重够用：钱包调用都在 `store.tx()` 的 `BEGIN IMMEDIATE` 里（`core/store.py:107` 的 `conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")`；`immediate=False` 的调用点 `app.py`/`moderation.py`/`lounge.py`/`groupstat.py` 都不调钱包），查重到插入之间不会有别的连接插进同键。`_write_ledger` 里 UNIQUE 的 `except` 保留作兜底，此时 SAVEPOINT 负责把余额回滚。
+- `SAVEPOINT` 与 `isolation_level=None`（`store.py:33-37`）兼容，嵌在外层 `BEGIN` 里只回滚到保存点，不影响调用方同事务里此前的写（比如 `items.take`）。
+- 不选的方案：
+  - 「先插分录、再 UPDATE、最后回填 `ledger.balance_after`」：插入时 `balance_after` 还不知道，`CHECK >= 0` 逼着先填占位值，再多一次 UPDATE，分录就不再是只追加。
+  - 「先在 Python 里读余额、算好 `after` 再插分录」：把 debit 的正确性从条件 UPDATE（`wallet.py:265-266` 的注释「条件更新是唯一的正确性来源」）挪到了读后写，和现有的设计约束冲突。
+  - 只查重、不加 SAVEPOINT：查重之后的其它失败（比如 `_write_ledger` 抛 `WalletError`）被调用方吞掉时，仍会留下半笔账。
+- 测试（加到现有钱包测试文件）：① 同一 `(room, op, posting)` 第二次 `credit` → 抛 `DuplicatePosting`，余额与分录数都不变；② `debit` 同上；③ 在同一个 `store.tx()` 里接住 `DuplicatePosting` 后提交，余额等于第一次之后的值；④ 让 `_write_ledger` 抛 `WalletError`（monkeypatch），接住后提交 → 余额不变；⑤ 送礼重放（`social.py:1072` 路径）后金币余额只扣一次。
+
+#### 4.2.10 消息级幂等（`idem` 表落地，交 builder）
+
+**框架给的消息唯一标识**（核实结果）：
+
+- `Message.sequence: int = 0`（`wxbot_framework/sdk.py:34`），来自原生消息：`native/text_service.py:383` 的 `body, sequence=message.sequence, msg_type=message.type,` → `text.py:114` 放进 data → `sdk.py:65` 的 `sequence=snapshot.get("sequence", 0)`。
+- `Message.session_id: str = ""`（`sdk.py:35`），由 `Message.from_native(cls, protocol, data, session_id)`（`sdk.py:48`）传入，是**本次微信连接**的会话号，重连后会变。
+- 框架自己就把 `(session_id, sequence)` 当唯一键：`wxbot_framework/members.py:202-203` 的 `CREATE UNIQUE INDEX IF NOT EXISTS messages_by_sequence` / `ON messages(account, session_id, sequence) WHERE sequence > 0;`。
+- `data["native_message_id"]`（`native/text_service.py:388` 的 `data['native_message_id'] = str(getattr(message, 'native_message_id', 0) or '')`）：微信服务端消息号，跨重连稳定，防撤回/媒体撤回已用它当消息身份。**作主键**（用户 2026-11-06 定）。
+
+**键与位置**
+
+- 键（用户 2026-11-06 定）：① `native_message_id` 非空且不是 `"0"` → `f"msg:{msg.chat_id}:{native_message_id}:{cmd.action}"`；② 否则 `session_id` 非空且 `sequence > 0` → `f"{msg.session_id}:{msg.sequence}:{cmd.action}"`（与 `schema.sql` 里 `idem` 表注释 `'<session_id>:<sequence>:<cmd>'` 一致）；③ 两者都没有 → 不生成键，**不做幂等**，照常执行。`scope = cmd.action`，`at = now`。`native_message_id` 先 `str(...).strip()`。
+- 位置：放在 `App.handle_message` 里、`dispatch(...)` 之前（`plugins/playhub/app.py:171-172`），也就是所有静默分支（小黑屋、未绑定、开关关、说明书卡）之后。不放在 `Plugin.on_message`（`plugins/playhub/__init__.py:95-118`），因为那里还没 `route()`，拿不到 `action`；而且被静默的消息不该占 `idem` 行。
+- 纯文本（`cmd is None`，`app.py:129-133`：记活跃 + 竞猜抢答）**不做**消息级幂等：每条闲聊都写一行太多；抢答发奖已由分录 UNIQUE 防重（`quiz.py:443` 的 `except DuplicatePosting:` 注释「同一局重放：钱已发过，不再计次」），重投只会多记一条活跃，影响很小。
+- 新文件 `plugins/playhub/core/idem.py`：
+
+```python
+def message_key(msg, action: str) -> str | None        # 按上面 ①②③ 顺序取键；③ 返回 None
+def claim(store: Store, key: str, *, scope: str, now: int) -> bool
+    # with store.tx() as conn: conn.execute("INSERT INTO idem (key, scope, at) VALUES (?, ?, ?)", ...)
+    # IntegrityError（主键冲突）→ False；成功 → True。不用 INSERT OR IGNORE，和 wallet.py:178 同一原则。
+```
+
+**claim 与业务：独立事务，先 claim 再执行**
+
+- 只能独立：引擎各自开 `store.tx()`（如 `engines/social.py:480`），连接上已在事务中时再 `BEGIN` 会报错；要合成一个事务，就得改所有引擎的事务边界。
+- 流程：`key = message_key(msg, cmd.action)` → 有键且 `claim(...)` 为 `False` → **直接返回 `None`**（重复投递静默，不回复，只记 debug 日志）→ 否则 `dispatch`。
+- **执行失败不释放 claim**（至多一次，用户 2026-11-06 已接受）。理由：引擎提交事务之后、返回 `Reply` 之前也可能抛异常，这时业务已经生效；而不少操作键带时间戳（例：送礼 `f"gift:{uid}:{target}:{gift.item_id}:{now}"`），重放时分录 UNIQUE 拦不住。释放 claim 会让重投的消息再执行一遍。失败的那条用户已经收到 `ERROR_TEXT`（`app.py:180`），重发一次就是新的 `sequence`、新的键。
+- `claim` 自身失败（`database is locked` 等 `sqlite3.Error`）→ 不执行、返回 `None`、记 warning（失败关闭；库忙到 3 s 拿不到锁时，引擎事务大概率也会失败）。
+- 回包发送失败（`Plugin._send`）同样不释放。
+- 跨重连：主键 `native_message_id` 跨重连稳定，重连后的重复投递也能拦住；只有退回 ② 的消息（没有服务端消息号）在重连后拦不住，由各引擎的分录与状态检查兜底。
+- 清理：30 天保留，由 §4.2.4 ③ 的 `run_purge` 删。
+
+**测试**（`tests/test_playhub_idem.py`，离线，用假 `Message`）：① 同一 `native_message_id` 的「签到」投两次 → 金币只加一次，第二次 `handle_message` 返回 `None`，键为 `msg:<room>:<id>:daily.signin` 形态；② 同一 `native_message_id`、不同 `session_id/sequence`（模拟重连重投）→ 仍只执行一次；③ `native_message_id` 为 `""` 或 `"0"` 时退回 `<session_id>:<sequence>:<action>`，同 `session_id/sequence` 投两次只执行一次；④ 两者都没有（空 id、`sequence=0`）投两次 → 都执行（幂等关闭）；⑤ 两个群里相同 `native_message_id` 的键不同（键含 room）；⑥ 引擎抛异常 → 返回 `ERROR_TEXT`，`idem` 行仍在，重投返回 `None`；⑦ 被小黑屋静默、未绑定、开关关的消息不写 `idem`；⑧ 纯文本不写 `idem`；⑨ 另开一条连接持有写锁时 `claim` 超时 → 返回 `None`、引擎未被调用；⑩ `idem` 行的 `scope` 等于 action、`at` 等于注入的 now。
 
 ### 4.3 高误触词治理
 
@@ -1341,6 +1581,8 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 小吉 | 3/12 | 8 | — |
 | 末吉 | 2/12 | 5 | — |
 
+**抽签卡与解签（第 4 批改版，照小V 版式）**：签文库 `content/playhub/fortune.jsonl` 每行 `{"id","no","tier","text","jie"}`，五档各 6 条；签诗为三三四四短句，`jie` 为柳如烟口吻两三句白话。先按上表抽签等，再在同档内用 rng 随机挑一条（`_pick_entry`），同一事务把 `{"day","id"}` 写入 kv `fortune.pick.<uid>`。卡片：`@昵称` / `🙏您抽到了第N签 · 签等！` / `-` 虚线 / `签诗：…` / 奖励行 / `💰 当前金币` / `═` 双线 / `💡欲知详情可发送【解签】`。`解签`（`DailyEngine.fortune_explain`）只读当天记录，回 `-` 虚线 + `🔮解签：<jie>`；当天没抽过则提示先抽签；不发币、不限次、不占抽签次数，跨天失效；缺 `jie` 回「这一签的释义还没写好」。
+
 **宝箱三型**
 
 | 箱型 | 取得方式 | 开启成本 | 金币 | 钻石 |
@@ -1397,8 +1639,8 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 活跃榜（第 4 批落地口径） | 默认**本周**（`DEFAULT_PERIOD="week"`），参数词 `日/今日/今天`、`周/本周/这周`、`月/本月/这个月`、`总/总榜/全部`；区间由 `clock.range_of()` 算，**上界一律取「今天」**而不是周末/月末（未来没有数据，少扫空区间）；周的起点是 `today - timedelta(days=today.weekday())`（周一）；单位是「条」= `activity_daily.messages` 求和，同一句只记一次（命令消息不记） |
 | 潜水（第 4 批落地口径） | 天数默认 7、上限 90；判据是 `activity_daily.last_at` 距今天数 ≥ 天数；读的是 `member_seen` 的昵称快照；**只统计、不清人**（框架无踢人能力，`:1743` 的软禁言同理） |
 | 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）；事件没带邀请人时按人榜为空、只报群级，并在卡面上直说「框架的入群事件没带邀请人」 |
-| 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**只在配置里开**，默认关；`现在` 走 `ctx.group_members(room)` 快照与 `member_seen` 比对，快照返回 `None`（缓存未就绪）时明说「读不到群成员快照」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
-| 小黑屋（第 4 批落地口径） | 软禁言：被关期间**在 `route()` 之前**就返回静默（连「黑名单 列」也不回，§8.2）；单次上限 **60 分钟**、每日上限 **10 次**（`daily_counter` 键 `jail_set`）；`jail.until` 到期由任意 `小黑屋` 子命令惰性清理（定时巡检属第 4 批剩余项）；`小黑屋 10` 这种缺目标形态直接拒绝（`target.isdigit() and not extra`）；列表卡标题带人数 |
+| 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**默认开**（kv 读不到 = 开），管理员发 `改名 关` 关闭；后台每天巡检一次并播报（§4.2.4 ①）；`现在` 走 `ctx.group_members(room)` 快照与改名基线 `groupstat.rename_snapshot` 比对（§4.2.4 ①，不再用 `member_seen`），快照返回 `None`（缓存未就绪）时明说「读不到群成员快照」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
+| 小黑屋（第 4 批落地口径） | 软禁言：被关期间**在 `route()` 之前**就返回静默（连「黑名单 列」也不回，§8.2）；单次上限 **60 分钟**、每日上限 **10 次**（`daily_counter` 键 `jail_set`）；`jail.until` 到期由任意 `小黑屋` 子命令惰性清理（**维持惰性，不做定时巡检**，2026-11-06 定）；`小黑屋 10` 这种缺目标形态直接拒绝（`target.isdigit() and not extra`）；列表卡标题带人数 |
 | 黑名单（第 4 批落地口径） | `scope='play'`，只在本插件内生效；被拉黑者与小黑屋同等待遇（`route()` 之前静默）；`加/删/列` 里 `列` 不需权限，`加/删` 需 owner/admin；`加` 用 `ON CONFLICT(room,uid,scope) DO UPDATE` 幂等，`删` 只删 `scope='play'` |
 | 门禁的两种失败方向（第 4 批落地口径） | **权限判定失败关闭**（`MemberFeed.role` 返回 `unknown` / 抛异常 → `permissions.gate` 拒绝，记 `audit.result='denied'`）；**静默判定失败开放**（`_muted()` 读库异常按「不在小黑屋/黑名单」，否则库一抖全群静音）。两者方向相反是有意的，写测试时不要统一 |
 
@@ -1416,7 +1658,7 @@ def top(conn, *, board: Board, room: str, period: Period | None = None,
 | 位置 | 职责 |
 | --- | --- |
 | `plugins/playhub/core/render.py` | 排版原语：装饰头 `=====图标 名称 图标=====`、项目行 `├ 金币：+30`、当前值 `💰当前金币：130`、`⚠注：`、行数/字数双上限。纯字符串，不碰库、不碰网络 |
-| `plugins/playhub/core/menus.py` | 43 张触发卡文案（与 43 个 playhub 动作一一对应，缺一张测试就红） |
+| `plugins/playhub/core/menus.py` | 44 张触发卡文案（与 44 个 playhub 动作一一对应，缺一张测试就红） |
 | `plugins/playhub/app.py` | 决定何时发卡：裸发 + `needs_arg`/`guide` + 开关已开 → 回卡 |
 | 各引擎 | 结果卡：`@昵称` → 主行 → `├` 明细 → `当前X：N` → 一句彩蛋 |
 
@@ -1638,9 +1880,9 @@ def resolve_workspace(ctx, msg) -> Path:
 
 ### 第 2 批：竞猜引擎 + 题库管线（12 人日）
 
-范围：`engines/quiz`、`engines/base`、`content/*`、`content/playhub/*.jsonl` 首批 11 类目各 100 题、`quiz_round/quiz_stat/quiz_attempt` 迁移、`daily_quiz`/`quiz_gc` 定时动作。约 9 个文件 + 题库。
+范围：`engines/quiz`、`engines/base`、`content/*`、`content/playhub/*.jsonl` 首批 11 类目各 100 题、`quiz_round/quiz_stat/quiz_attempt` 迁移。（超时收题与清理归第 4 批 §4.2 后台线程；`daily_quiz` 不做。）约 9 个文件 + 题库。
 
-实现进度（2026-11-05）：`content/loader.py`、`engines/quiz.py`、`registry` 13 条绑定、`app._plain_text` 纯文本通路与 `tests/test_playhub_quiz.py`（22 例）已落地并通过；题库为 13 类 × 30 题（样例量，非下表 100 题/类）。**未落地**：`engines/base`（改用 `engines/__init__.py` 的 `Reply`/`GameRuntime`，不单建文件）、`daily_quiz`/`quiz_gc` 两个定时动作（`sweep()` 已公开，接线在批 4）、题库扩量。
+实现进度（2026-11-05）：`content/loader.py`、`engines/quiz.py`、`registry` 13 条绑定、`app._plain_text` 纯文本通路与 `tests/test_playhub_quiz.py`（22 例）已落地并通过；题库为 13 类 × 30 题（样例量，非下表 100 题/类）。**未落地**：`engines/base`（改用 `engines/__init__.py` 的 `Reply`/`GameRuntime`，不单建文件）、超时收题（`sweep()` 已公开，由批 4 §4.2 后台线程接线；`daily_quiz` 不做）、题库扩量。
 
 验收标准：
 
@@ -1701,27 +1943,27 @@ def resolve_workspace(ctx, msg) -> Path:
 
 ### 第 4 批：群管统计 / 定时推送 / 合规收口（12 人日）
 
-范围：`engines/groupstat`、`engines/moderation`、`activity_daily`/`member_seen`/`nickname_log`/`invite_daily`/`invite_credit` 计数接线、`core/rank.py` 四榜与活跃榜月/总、7 个定时动作、群内批准计划 + 面板 `plan_id/revision` 的定时推送门禁、C1（`wxbot_framework/group_events.py` 五处）+ `group_notice` 回归、功能开关面板说明。**不再包含 `rank_period` 快照任务**（v1 改为实时聚合）。
+范围：`engines/groupstat`、`engines/moderation`、`activity_daily`/`member_seen`/`nickname_log`/`invite_daily`/`invite_credit` 计数接线、`core/rank.py` 四榜与活跃榜月/总、5 个后台定时动作（插件自管线程 `scheduler.py`，§4.2；第 46 项定时推送复用框架控制台定时文本任务，不写新代码）、C1（`wxbot_framework/group_events.py` 五处）+ `group_notice` 回归、功能开关面板说明。**不再包含 `rank_period` 快照任务**（v1 改为实时聚合）。
 
-人日构成：原 10 + 四榜及活跃月/总 0.5 + C1 与群通知回归 0.75 + 定时配置批准契约 0.5 + 跨模块一致性验收 0.25 = **12**。
+人日构成：原 10 + 四榜及活跃月/总 0.5 + C1 与群通知回归 0.75 + 后台定时线程（§4.2，含 4.2.9 钱包写序、4.2.10 消息级幂等）0.5 + 跨模块一致性验收 0.25 = **12**。
 
 验收标准：
 
 1. 群消息驱动 `activity_daily` 累加；`潜水 7` 与 `活跃榜 周` 数字对得上；`活跃榜 月`/`活跃榜 总` 在跨月、跨年、2 月边界用例上区间正确（周一为周起点）。
 2. 改群昵称后，次日巡检（或手动 `改名 现在`）出一条 `nickname_log` 并在群内播报。
 3. `小黑屋 @A 10` 后 A 的游戏命令被静默；10 分钟后自动解除（定时巡检）。
-4. 权限判定统一走 `ctx.group_member_role()`（`adapters/memberfeed.py` 封装）：只有群主/管理员能执行 `小黑屋`/`黑名单`/`潜水统计`/`改名` 监测开关/定时推送配置；`member`、`unknown` 与读取异常一律拒绝，记 `audit.result='denied'` 并回一句拒绝，**不得改业务状态、不扣款、不建定时配置**。自建名单（旧 `members.owner_ids`/`is_owner` 思路）命中但群角色为 `member` 时仍拒绝。
-5. 7 个定时动作在控制台「定时任务」页可建、可停、可删（`wxbot_framework/scheduled_tasks.py:26-47`），触发后按预期发消息；群推送类动作只绑 `plan_id/revision`，执行前重读已批准计划并重查批准者角色——计划缺失/停用/revision 过期/批准者已降权时**不发并记拒绝审计**，改面板原始参数不能扩大计划范围。
+4. 权限判定统一走 `ctx.group_member_role()`（`adapters/memberfeed.py` 封装）：只有群主/管理员能执行 `小黑屋`/`黑名单`/`潜水统计`/`改名` 监测开关；`member`、`unknown` 与读取异常一律拒绝，记 `audit.result='denied'` 并回一句拒绝，**不得改业务状态、不扣款**。自建名单（旧 `members.owner_ids`/`is_owner` 思路）命中但群角色为 `member` 时仍拒绝。
+5. 5 个后台定时动作（§4.2）按 §4.2.8 的离线用例通过：改名巡检默认开、每天至多播报一次、`改名 关` 后不播；离婚超时自动退款；超时题自动收、`idem` 30 天 / `audit` 180 天前的行被清；工资每对每天只发一次（雇主 `by_uid` 出、余额不足不发并审计、`feature.employ` 关时不发）；每周一给上周活跃榜前 10 各发 1 个银箱、不播报、同周不重发；重启与同日多次 tick 均不重复。第 46 项定时推送在控制台「定时任务」页用框架定时文本任务可建、可停、可删，playhub 不参与。
 6. `宝宝 改名 X` 不被门禁误拦（它是玩家玩法，不是群管理开关）。
-7. 全量回归：47 项逐条冒烟（脚本化，按 `keywords.py` 的 61 个词遍历），无异常堆栈、无队列堆积；同一脚本再跑一遍"误触语料"（50 条常见闲聊），断言零回复；§4 总表项数、触发词账、帮助文案三处数量断言一致。
+7. 全量回归：47 项逐条冒烟（脚本化，按 `keywords.py` 的 62 个词遍历），无异常堆栈、无队列堆积；同一脚本再跑一遍"误触语料"（50 条常见闲聊），断言零回复；§4 总表项数、触发词账、帮助文案三处数量断言一致。
 
 **落地进度（2026-11-05，前半批已完成）**
 
 - 已落盘：`core/activity.py`（`record` 双 UPSERT `activity_daily` + `member_seen`、`scores`、`last_seen`、`seen_names`、`record_nickname_change`、`recent_names`）、`core/clock.range_of()`、`engines/groupstat.py`（`潜水`/`邀请`/`改名`）、`engines/moderation.py`（`小黑屋`/`黑名单`，导出 `is_jailed`/`is_blocked`）、`engines/ranking.py` 的 `activity` 榜（`top()` 支持 `period`，`format_board()` 泛化、新增 `format_activity()`）。
 - 接线：`registry.CURRENT_BATCH = 4`，`BINDINGS` **37 → 43**（本批 6 个动作全部绑定，`ACTION_PLAN` 里不再有 `None`）；`build_engines` 加 `groupstat`/`moderation`；`app.handle_message` 在 `route()` **之前**判小黑屋/黑名单静默，纯文本分支记 `activity.record`（命令消息不记、自己不记）。
-- 验收对应：第 1、2、3、4、6 条已由 `tests/test_playhub_batch4.py`（56 例）覆盖；第 5 条（定时任务页可建可停）与第 7 条（47 项脚本化冒烟）未做。
+- 验收对应：第 1、2、3、4、6 条已由 `tests/test_playhub_batch4.py`（56 例）覆盖；第 5 条（后台定时动作）与第 7 条（47 项脚本化冒烟）未做。
 - 全量：playhub **363 passed / 557 subtests**，`main.py --check` 通过。
-- 第 4 批剩余（都是定时侧）：`scheduled_pay_salary`、`daily_quiz`、`quiz_gc`、离婚超时退款、`daily_report`、`nickname_watch`、活跃榜周榜发银箱——设计里这 7 个动作要绑 `plan_id/revision` 并在执行前重查批准者角色，工作量集中在这里。
+- 第 4 批剩余（都是定时侧，2026-11-06 改为插件自管线程，见 §4.2）：改名巡检、离婚超时退款、收题与 `idem`/`audit` 清理、发工资、周榜发银箱共 5 个动作，落在新文件 `plugins/playhub/scheduler.py`；不绑 `plan_id/revision`、不做群内批准。`daily_quiz`/`daily_almanac`/`daily_report`/`space_refresh` 不做（不在 47 项内）；第 46 项只是用户在控制台自配的定时文本。另含 §4.2.9 钱包写序修复、§4.2.10 消息级幂等、框架 `ctx.chat_allowed`。
 - 三条踩坑（已写进代码注释）：①`ctx.group_members()` 缓存未就绪返回 `None`，**不能** `raw or ()` 当空列表，否则「读不到快照」会被误报成「没人改名」；②`小黑屋 10` 的目标位会解析成数字，必须先判「纯数字且无后续」再回「要点人」；③`render.result()` 的 headline 与 `render.head()` 都写标题会重复一行，列表卡只用 headline 带人数。
 
 ### 人日汇总
@@ -1731,12 +1973,12 @@ def resolve_workspace(ctx, msg) -> Path:
 | 1 | 内核 + 两币钱包与迁移 + 一层权限门禁 + `#`/艾特解析 + 签到/抽签/金币榜 | 11 |
 | 2 | 竞猜 + 题库管线 + 13 类目 | 12 |
 | 3 | 社交（含婚姻 4 子命令）+ 抽奖 + 点歌/天气/文案/群空间 | 14 |
-| 4 | 群管统计 + 四榜 + 定时推送批准契约 + C1 与合规收口 | 12 |
+| 4 | 群管统计 + 四榜 + 后台定时线程 + C1 与合规收口 | 12 |
 | — | 合计 | **49** |
 | — | 缓冲 15%（题库补录、联调、真机验证） | 7.35 |
 | — | 合计（含缓冲） | **56.35 → 取 57** |
 
-与 v1 的差异：净增 4 人日（45 → 49）。新增 5.75（钱包迁移与两币契约 1.25、一层权限 0.5、`#`/艾特解析 0.25、婚姻四子命令 1.25、钻石买盲盒次数与清求婚次数 0.5、四榜及活跃月/总 0.5、C1 与群通知回归 0.75、定时推送批准契约 0.5、跨模块一致性验收 0.25），删减 1.75（超级宝宝 0.75、切磋的监狱/医院联动 1.0）。第 1 批先落权限框架，后续批次的管理动作直接复用；`rank_period` 从第 4 批必交项移出，改为实时聚合。
+与 v1 的差异：净增 4 人日（45 → 49）。新增 5.75（钱包迁移与两币契约 1.25、一层权限 0.5、`#`/艾特解析 0.25、婚姻四子命令 1.25、钻石买盲盒次数与清求婚次数 0.5、四榜及活跃月/总 0.5、C1 与群通知回归 0.75、后台定时线程 0.5（原「定时推送批准契约」作废，人日原位替换）、跨模块一致性验收 0.25），删减 1.75（超级宝宝 0.75、切磋的监狱/医院联动 1.0）。第 1 批先落权限框架，后续批次的管理动作直接复用；`rank_period` 从第 4 批必交项移出，改为实时聚合。
 
 题库内容生产（2200 题）不在人日估算内，建议与 B2 并行外包/自录，按 60 题/人日 ≈ 37 人日的内容工作量，需单独立项。
 
@@ -1797,7 +2039,7 @@ def resolve_workspace(ctx, msg) -> Path:
 
 1. **邀请统计依赖框架改动（C1）**：`GroupMemberEvent` 原本只有 `kind/room_id/member_id/nickname/source`（`group_events.py:43-49`），解析时邀请者信息被丢弃（`group_events.py:100-106` 只捕获 target 占位符，`:185` 只取 `name == role` 的 link）。v3 决定**改框架五处补 `actor_id`**（§8.7），改完后：能证明邀请人时按人统计、进邀请榜；`actor_id` 缺失（纯文本无链接、同名多义、链接不可验证）时**降级为群级计数**，按人榜显示「暂无可归属邀请记录」。代价是维护一个上游文件、需随身跟进上游更新（存在合并冲突）。
 2. **接龙进行中关键词被吞**（`plugins/idiom_chain/__init__.py:110`）：接龙开局后任何非 `/` 文本都被当答案送判定，`签到` 也会被回一句「请输入一个完整的四字成语」。**不花 LLM 额度**（`judge.py:39-40` 本地短路），纯粹是刷屏噪音。解法与代价见 §2.7 方案 A/B/C，需改现有插件、未获批准。
-3. **机器人自己账号发的关键词不进插件**（`text.py:104-115` 的 `own_group_command` 白名单只放行四字中文与框架命令；playhub 的 61 个词全是 2–3 字）。这对正常使用无影响（playhub 另在 `on_message` 首行对 `is_self` 一律 return，见 §2.6.5），**只影响"用自己的号自测"**：自测请用另一个号（进验证群的运营号）。
+3. **机器人自己账号发的关键词不进插件**（`text.py:104-115` 的 `own_group_command` 白名单只放行四字中文与框架命令；playhub 的 62 个词全是 2–3 字）。这对正常使用无影响（playhub 另在 `on_message` 首行对 `is_self` 一律 return，见 §2.6.5），**只影响"用自己的号自测"**：自测请用另一个号（进验证群的运营号）。
 4. **小黑屋不是真禁言**（无 kick/mute 能力，`backend.py:10-31`）。
 5. **群空间控制台页面未定**：`panel_http.py:87-234` 是硬编码路由表，没有插件注册页面机制；B1–B4 只做群内文本卡片 + 数据由此可查，控制台页面需框架改动（见 §9）。
 6. **关键词触发天然无法"只对某群生效"**：群里发 `签到` 与日常用语同形，`bare_behavior`/强制参数能压住大部分误触，但**做不到零误触**；已知残留见 §4.3 的 9 个高危词。
@@ -1840,7 +2082,7 @@ def resolve_workspace(ctx, msg) -> Path:
 
 1. **`idiom_chain` 是否允许改 1 个 if（3 行）**（`plugins/idiom_chain/__init__.py:110`）？这是 v3 里**唯一**需要动现有插件代码才能"完整可用"的点。三个选项：
    - **方案 A（推荐）**：`if (not game or not text or text in GROUP_CONTROL_COMMANDS or not FOUR_CHINESE.fullmatch(text)): return`。零判定损失（`judge.py:39` 本就只认四字），同时是 bugfix（消除接龙期间对每条闲聊的刷屏误回复）。代价：改 3 行 + 2 个用例，需 `from wxbot_framework.text import GROUP_CONTROL_COMMANDS, FOUR_CHINESE`。
-   - **方案 B（不改）**：接龙一开局，本群 61 个关键词全部失效且每条闲聊被回一句错误提示 —— 无前缀下这是**不可接受**的产品状态，只在 A 被否时兜底。
+   - **方案 B（不改）**：接龙一开局，本群 62 个关键词全部失效且每条闲聊被回一句错误提示 —— 无前缀下这是**不可接受**的产品状态，只在 A 被否时兜底。
    - **方案 C**：停用 `idiom_chain`，由 playhub 重写接龙（+约 2 人日，且要重做 LLM 判定与人设耦合）。
    - 注：`plugins/idiom_chain/` 在插件目录，**不涉及上游合并**；与此相对，§8.7 的 C1 改 `wxbot_framework/group_events.py` **会产生上游合并冲突风险**，两者不可混为一谈。
 2. **是否同意 playhub 对 `is_self` 一律 return**（`on_message` 第一行）？这是自触发循环的唯一确定性防线（§2.6.5 论证了框架挡不住四字/白名单词）。代价：**不能用机器人自己的号自测**，自测须换号（验证群里的运营号）。若坚持"自号也能触发"，则必须接受"回包恰好等于触发词时自触发"的残余风险，并额外投入一套基于 `msg_id` 的回包指纹抑制（约 +0.5 人日，且仍有竞态）。

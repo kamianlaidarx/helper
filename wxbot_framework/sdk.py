@@ -473,7 +473,7 @@ class LegacyService:
 
 class PluginContext:
     def __init__(self, name, options, service, capabilities, *, llm_config_path=None, member_store=None, speech=None,
-                 plugin_active=None):
+                 plugin_active=None, chat_allowlist=None):
         self.name = name
         self.config = MappingProxyType(copy.deepcopy(options))
         self.logger = logging.getLogger(f"Plugin.{name}")
@@ -484,9 +484,35 @@ class PluginContext:
         self._members = member_store
         self._speech = speech
         self._plugin_active = plugin_active
+        # 白名单是配置的**回调**而不是快照：网页热更新后插件不必重新加载就能读到新值。
+        self._chat_allowlist = chat_allowlist
 
     def plugin_is_active(self, name):
         return bool(self._plugin_active and self._plugin_active(name))
+
+    def chat_allowed(self, chat_id):
+        """这个会话是否在 `chat_allowlist` 里（发送侧白名单的插件侧只读视图）。
+
+        空白名单 = 全部允许（配置语义）；没注入回调也按全部允许，兼容旧调用方。
+        回调抛异常、返回值不是容器、`chat_id` 不是非空字符串一律 False——这是
+        「主动往群里发消息」的判断依据，失败必须关闭。
+        """
+        if self._chat_allowlist is None:
+            return True
+        try:
+            allowed = self._chat_allowlist()
+        except Exception:
+            return False
+        if not allowed:
+            return True
+        if not isinstance(chat_id, str) or not chat_id:
+            return False
+        if isinstance(allowed, str):
+            return False
+        try:
+            return chat_id in allowed
+        except TypeError:
+            return False
 
     @property
     def speech(self):

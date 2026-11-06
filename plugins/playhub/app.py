@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from .core import activity, clock, render, switches
+from .core import activity, clock, idem, render, switches
 from .core.menus import menu_for
 from .engines import GameRuntime, Reply, build_engines, msg_nickname
 from .engines import moderation
@@ -168,6 +168,12 @@ class App:
         if engine is None:
             return None                         # 引擎没接线（后续批次）：静默
 
+        # §4.2.10 消息级幂等：所有静默分支都走完之后才 claim，先 claim 后执行。
+        # 重复投递直接返回 None（不回复、不改状态）；claim 失败（写锁超时等）
+        # 也按「不执行」处理——宁可这条没处理，也不能在身份不明时改一次钱。
+        if not self._claim(msg, cmd.action):
+            return None
+
         try:
             reply = dispatch(engine, cmd.action, cmd, msg, ctx, self._game)
         except Exception:                       # §2.5：异常不上抛，转成一句固定回复
@@ -179,6 +185,36 @@ class App:
             )
             return Reply(ERROR_TEXT, cmd.action)
         return reply
+
+    # -- 消息级幂等（§4.2.10）-----------------------------------------------
+    def _claim(self, msg, action: str) -> bool:
+        """占下这条消息的幂等键；False 表示重复投递或占不下。
+
+        三种结果分开处理：编不出键（无 native id、无 session/sequence）时照常执行；
+        重复时静默返回；claim 自身出错（写锁超时、库坏）时**不执行**——身份不明
+        时宁可少做一次，也不能多扣一次钱。claim 成功后业务失败不释放（至多一次）。
+        """
+        if self._store is None:
+            return True
+        key = idem.message_key(msg, action)
+        if key is None:
+            return True
+        try:
+            claimed = idem.claim(self._store, key, scope=action, now=self._now())
+        except Exception:
+            self._log.warning(
+                "幂等键写入失败，本条不执行：room=%s action=%s",
+                getattr(msg, "chat_id", ""),
+                action,
+            )
+            return False
+        if not claimed:
+            self._log.debug(
+                "重复投递已忽略：room=%s action=%s",
+                getattr(msg, "chat_id", ""),
+                action,
+            )
+        return claimed
 
     # -- 纯文本入口（竞猜抢答 + 四个框架子命令词）---------------------------
     def _plain_text(self, ctx, msg) -> Reply | None:

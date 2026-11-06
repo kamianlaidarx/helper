@@ -447,10 +447,11 @@ class QuizEngine:
         return coin
 
     # -- 超时收题 -----------------------------------------------------------
-    def _sweep(self, conn, now: int, *, room: str | None = None) -> int:
+    def _sweep(self, conn, now: int, *, room: str | None = None, release_slots: bool = True) -> int:
         """把超时未结束的对局标记为结束；返回收掉的条数。
 
-        第 3 批接 `scheduled_quiz_gc` 后由定时器调用，当前靠开局时懒清理。
+        前台懒清理（开局时）与后台定时动作共用：`release_slots=False` 供后台使用
+        （§4.2 `gc`）——槽位属于前台运行期状态，后台线程不该替它释放。
         """
         if room is None:
             rooms = [
@@ -473,14 +474,16 @@ class QuizEngine:
                 (room, now),
             )
         closed = int(cur.rowcount or 0)
-        if closed:                            # 超时也算结束，槽位必须跟着让出来
+        if closed and release_slots:          # 超时也算结束，槽位必须跟着让出来
             for key in rooms:
                 release_slot(key, SLOT_OWNER)
         return closed
 
-    def sweep(self, conn, now: int | None = None) -> int:
+    def sweep(self, conn, now: int | None = None, *, release_slots: bool = True) -> int:
         """供定时动作调用（§4.2 `quiz_gc`）。"""
-        return self._sweep(conn, int(self._now()) if now is None else now)
+        return self._sweep(
+            conn, int(self._now()) if now is None else now, release_slots=release_slots
+        )
 
     # -- 工具 ---------------------------------------------------------------
     def _read_open(self, store, room: str) -> OpenRound | None:

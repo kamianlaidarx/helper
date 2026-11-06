@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..core import balance, clock, credit, ensure_player, items, render
+from ..core import balance, clock, credit, ensure_player, items, kv, render
 from ..core.errors import DuplicatePosting
 from . import Reply, msg_nickname, msg_room, msg_uid, store_of
 
@@ -72,10 +72,28 @@ FORTUNE_TIERS: tuple[FortuneTier, ...] = (
 )
 FORTUNE_TOTAL_WEIGHT = sum(t.weight for t in FORTUNE_TIERS)
 
+
+@dataclass(frozen=True)
+class FortuneEntry:
+    """一条签：`id` 供跨天/解签定位，`no` 是签号，`jie` 是给「解签」看的白话释义。"""
+
+    id: str
+    no: int
+    tier: str
+    text: str
+    jie: str = ""
+
+
 if FORTUNE_TOTAL_WEIGHT != 12:      # 加载期硬校验，不许靠「差不多」
     raise ValueError(f"§4.4 抽签总权重必须是 12 份，实际 {FORTUNE_TOTAL_WEIGHT}")
 
 FORTUNE_NOT_READY = "签文库未就绪"
+#: 当天的签记在 kv（按群 + 人，每天覆盖），解签只认「今天」这一条。
+FORTUNE_PICK_PREFIX = "fortune.pick"
+FORTUNE_NO_JIE = "这一签的释义还没写好"
+FORTUNE_EXPLAIN_MISSING = "🌙 今天还没抽签，先发「抽签」再来解签吧"
+#: 小V 版式的虚线分隔（19 个半角连字符，`docs/design/xiaov-cmd/images.md`「## 抽签」）
+FORTUNE_DASH = "-" * 19
 SIGNIN_ALREADY = "今天已经签过了，明天再来吧"
 FORTUNE_ALREADY = "今天已经抽过签了，明天再来吧"
 
@@ -105,6 +123,11 @@ def signin_diamond(streak: int) -> int:
 # ---------------------------------------------------------------------------
 def _streak_key(uid: str) -> str:
     return f"signin.streak.{uid}"
+
+
+def _pick_key(uid: str) -> str:
+    """当天签的 kv 键（按群 + 人；值 `{"day": ..., "id": ...}`，每天覆盖）。"""
+    return f"{FORTUNE_PICK_PREFIX}.{uid}"
 
 
 def _yesterday(day: str) -> str:
@@ -222,18 +245,46 @@ def _line_tier(row: dict) -> str | None:
     return None
 
 
-def load_fortune_bank(path: Path) -> tuple[tuple[str, str], ...] | None:
-    """读一个签文库，返回 ((签等, 签文), ...)；读不动返回 None。
+def _line_jie(row: dict) -> str:
+    """释义：`jie` 优先；没有就空串，解签时回「这一签的释义还没写好」。"""
+    value = row.get("jie")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _line_no(row: dict, lineno: int) -> int:
+    """签号：`no` 是正整数；缺号/坏号用文件行号兜底（漏写一个号不该废掉这条签）。"""
+    value = row.get("no")
+    if isinstance(value, bool):
+        return lineno
+    if isinstance(value, int):
+        return value if value > 0 else lineno
+    if isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+        return number if number > 0 else lineno
+    return lineno
+
+
+def _line_id(row: dict, lineno: int) -> str:
+    """签 id：行里给了就用，没给用 `line-<行号>`（同一文件内唯一即可）。"""
+    value = row.get("id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return f"line-{lineno}"
+
+
+def load_fortune_bank(path: Path) -> tuple[FortuneEntry, ...] | None:
+    """读一个签文库，返回 `(FortuneEntry, ...)`；读不动返回 None。
 
     坏行（非 JSON、缺签等、缺签文）逐行跳过，不抛异常——题库是运维手改的，
-    一行手滑不该让整个玩法崩掉（§2.5：异常不上抛）。
+    一行手滑不该让整个玩法崩掉（§2.5：异常不上抛）。`id`/`no`/`jie` 缺了各自兜底：
+    行号当签号、`line-<行号>` 当 id、空释义留给「解签」提示。
     """
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    rows: list[tuple[str, str]] = []
-    for line in raw.splitlines():
+    rows: list[FortuneEntry] = []
+    for lineno, line in enumerate(raw.splitlines(), start=1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -247,7 +298,15 @@ def load_fortune_bank(path: Path) -> tuple[tuple[str, str], ...] | None:
         text = _line_text(row)
         if tier is None or text is None:
             continue
-        rows.append((tier, text))
+        rows.append(
+            FortuneEntry(
+                id=_line_id(row, lineno),
+                no=_line_no(row, lineno),
+                tier=tier,
+                text=text,
+                jie=_line_jie(row),
+            )
+        )
     return tuple(rows)
 
 
@@ -374,6 +433,8 @@ class DailyEngine:
             return self.signin(msg, ctx, game)
         if action == "daily.fortune":
             return self.fortune(msg, ctx, game)
+        if action == "daily.fortune_explain":
+            return self.fortune_explain(msg, ctx, game)
         if action == "daily.almanac":
             return self.almanac(cmd, msg, ctx, game)
         if action == "daily.horoscope":
@@ -475,8 +536,8 @@ class DailyEngine:
         if bank is None:
             return Reply(FORTUNE_NOT_READY, "daily.fortune")
         tier = self.draw_tier()
-        text = _pick_text(bank, tier.name)
-        if text is None:
+        entry = _pick_entry(bank, tier.name, self._rng)
+        if entry is None:
             return Reply(FORTUNE_NOT_READY, "daily.fortune")
 
         already = False
@@ -488,7 +549,11 @@ class DailyEngine:
                 else:
                     ensure_player(conn, room=room, uid=uid, nickname=nickname or None, now=now)
                     _counter_consume(conn, room=room, uid=uid, day=day, key=FORTUNE_KEY, cap=FORTUNE_CAP, now=now)
-                    entry = credit(
+                    # 当天抽到哪一签落在 kv（按群 + 人，每天覆盖），解签只认今天这条。
+                    kv.set_json(
+                        conn, room, _pick_key(uid), {"day": day, "id": entry.id}, now
+                    )
+                    coin_entry = credit(
                         conn,
                         room=room,
                         uid=uid,
@@ -499,7 +564,7 @@ class DailyEngine:
                         posting_no=0,
                         now=now,
                     )
-                    coin_after = entry.balance
+                    coin_after = coin_entry.balance
                     if tier.diamond:
                         credit(
                             conn,
@@ -518,7 +583,37 @@ class DailyEngine:
 
         if already:
             return Reply(FORTUNE_ALREADY, "daily.fortune")
-        return Reply(_fortune_text(nickname, tier, text, coin_after), "daily.fortune")
+        return Reply(_fortune_text(nickname, tier, entry, coin_after), "daily.fortune")
+
+    # -- 解签 ---------------------------------------------------------------
+    def fortune_explain(self, msg, ctx=None, game=None) -> Reply | None:
+        """回今天的签诗释义；不发币、不限次数、不消耗抽签次数。
+
+        「今天」按抽签记录的 `day` 判断：跨天就只提示先抽签，昨天的签不再解。
+        """
+        room, uid = msg_room(msg), msg_uid(msg)
+        if not room or not uid:
+            return None
+        store = store_of(game)
+        now = self._now()
+        day = clock.day_of(now)
+        nickname = msg_nickname(msg, ctx)
+
+        with store.tx(immediate=False) as conn:
+            record = kv.get_json(conn, room, _pick_key(uid))
+        if not isinstance(record, dict) or record.get("day") != day:
+            return Reply(FORTUNE_EXPLAIN_MISSING, "daily.fortune_explain")
+
+        bank = self._bank(store)
+        if bank is None:
+            return Reply(FORTUNE_NOT_READY, "daily.fortune_explain")
+        wanted = record.get("id")
+        entry = next((row for row in bank if row.id == wanted), None)
+        jie = (entry.jie if entry is not None else "") or FORTUNE_NO_JIE
+        rows = (FORTUNE_DASH, f"🔮解签：{jie}")
+        return Reply(
+            render.result(nickname, "", rows), "daily.fortune_explain"
+        )
 
     # -- 内部 ---------------------------------------------------------------
     # -- 黄历 ---------------------------------------------------------------
@@ -648,7 +743,7 @@ class DailyEngine:
             "daily.wealth",
         )
 
-    def _bank(self, store) -> tuple[tuple[str, str], ...] | None:
+    def _bank(self, store) -> tuple[FortuneEntry, ...] | None:
         """按 §5.2 取签文库：① 存在即**完全覆盖** ②（不做跨层合并）。"""
         for path in fortune_bank_paths(store, repo_root=self._repo_root):
             if not path.is_file():
@@ -658,16 +753,17 @@ class DailyEngine:
         return None
 
 
-def _pick_text(bank: tuple[tuple[str, str], ...], tier: str) -> str | None:
-    """取该档第一条签文。
+def _pick_entry(bank: tuple[FortuneEntry, ...], tier: str, rng) -> FortuneEntry | None:
+    """在同档的签里随机挑一条（rng 由调用方注入，§2.5 确定性要求）。
 
-    §5.3 没有规定「同档多签」怎么选，本批按文件顺序取第一条（可预期、可测）；
-    要随机挑选属于题库加载层的事，等 `content/loader.py` 落地再改。
+    该档只有一条时不碰 rng——少一次调用，测试里给「只认 12 份」的假 rng 也不会被绊到。
     """
-    for name, text in bank:
-        if name == tier:
-            return text
-    return None
+    candidates = [entry for entry in bank if entry.tier == tier]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    return candidates[rng.randrange(len(candidates))]
 
 
 def _signin_text(
@@ -696,11 +792,23 @@ def _signin_text(
     return render.result(nickname, "🎁 签到成功", rows, tail=tail)
 
 
-def _fortune_text(nickname: str, tier: FortuneTier, text: str, coin_after: int) -> str:
-    """抽签结果卡：签档 + 奖励 + 当前余额 + 签文（签文原样保留，不改写、不截断）。"""
-    rows = [render.row("├ ", f"金币：+{tier.coin}")]
+def _fortune_text(
+    nickname: str, tier: FortuneTier, entry: FortuneEntry, coin_after: int
+) -> str:
+    """抽签结果卡（小V 版式，`docs/design/xiaov-cmd/images.md`「## 抽签」）。
+
+    `@昵称` → 签号/签等 → 虚线 → 签诗 + 奖励 + 余额 → 双线 → 解签提示。
+    签文原样保留，不改写、不截断。
+    """
+    rows = [
+        FORTUNE_DASH,
+        f"签诗：{entry.text}",
+        render.row("├ ", f"金币：+{tier.coin}"),
+    ]
     if tier.diamond:
         rows.append(render.row("├ ", f"钻石：+{tier.diamond}"))
     rows.append(render.current("💰", "金币", coin_after))
-    rows.append(render.quote("📜", text))
-    return render.result(nickname, f"🎋 抽到「{tier.name}」", rows)
+    tail = f"{render.rule(10)}\n💡欲知详情可发送【解签】"
+    return render.result(
+        nickname, f"🙏您抽到了第{entry.no}签 · {tier.name}！", rows, tail=tail
+    )

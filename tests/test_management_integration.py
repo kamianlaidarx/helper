@@ -95,6 +95,65 @@ class ManagementIntegrationTests(unittest.TestCase):
             self.assertNotIn(secret, log)
 
 
+class ChatAllowlistContextTests(unittest.TestCase):
+    """`ctx.chat_allowed()`：空白名单=全允许，坏值/回调异常一律 False，热更新即生效。"""
+
+    def test_context_without_callback_allows_every_chat(self):
+        context = PluginContext("test", {}, Mock(), set())
+        for chat_id in (ROOM, FIRST, "", None):
+            with self.subTest(chat_id=chat_id):
+                self.assertTrue(context.chat_allowed(chat_id), "没注入回调时按「全部允许」")
+
+    def test_injected_allowlist_filters_and_fails_closed(self):
+        context = PluginContext("test", {}, Mock(), set(), chat_allowlist=lambda: [ROOM])
+        self.assertTrue(context.chat_allowed(ROOM))
+        self.assertFalse(context.chat_allowed(FIRST))
+        for bad in ("", None, 123, [ROOM]):
+            with self.subTest(bad=bad):
+                self.assertFalse(context.chat_allowed(bad), "非非空字符串必须是 False")
+
+        def broken():
+            raise RuntimeError("配置损坏")
+
+        self.assertFalse(PluginContext("t", {}, Mock(), set(), chat_allowlist=broken).chat_allowed(ROOM))
+        # 回调返回字符串（配置被手改成字符串）时不能按子串匹配放行。
+        self.assertFalse(PluginContext("t", {}, Mock(), set(), chat_allowlist=lambda: ROOM).chat_allowed(ROOM[:5]))
+        self.assertTrue(PluginContext("t", {}, Mock(), set(), chat_allowlist=lambda: []).chat_allowed(FIRST))
+
+    def test_manager_reads_allowlist_on_every_call(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        directory = root / "plugins/stub"
+        directory.mkdir(parents=True)
+        (directory / "__init__.py").write_text(
+            "class Plugin:\n    def on_message(self, message, ctx):\n        return None\n",
+            encoding="utf-8",
+        )
+        (directory / "plugin.json").write_text(
+            json.dumps({"api": "v1", "requires": ["text.receive"]}), encoding="utf-8"
+        )
+        path = root / "bot_config.json"
+        path.write_text(json.dumps({"backend": "native_text", "plugins": {}}), encoding="utf-8")
+        manager = PluginManager(root / "plugins", ConfigStore(path), Mock(), {"text.receive"})
+        self.addCleanup(manager.shutdown)
+        manager.reload()
+        context = manager.records["stub"].context
+        self.assertTrue(context.chat_allowed(ROOM), "空白名单时全允许")
+
+        # 网页面板改配置后管理台原地换掉 config 字典：同一个 ctx 必须立刻读到新值。
+        manager.config = {**manager.config, "chat_allowlist": [ROOM]}
+        self.assertTrue(context.chat_allowed(ROOM))
+        self.assertFalse(context.chat_allowed(FIRST))
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["chat_allowlist"] = [SECOND]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        manager.config = manager.store.load()
+        self.assertTrue(context.chat_allowed(SECOND))
+        self.assertFalse(context.chat_allowed(ROOM), "热更新后旧群必须立刻失效")
+
+
 class AutoAcceptPluginTests(unittest.TestCase):
     def test_existing_config_without_new_plugin_entry_remains_disabled_until_explicit_enable(self):
         temporary = tempfile.TemporaryDirectory()

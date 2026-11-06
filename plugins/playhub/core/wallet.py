@@ -161,6 +161,26 @@ def balance(conn: sqlite3.Connection, *, room: str, uid: str, currency: Currency
 # ---------- 借贷 ----------
 
 
+def _posting_exists(
+    conn: sqlite3.Connection, room: str, operation_key: str, posting_no: int
+) -> bool:
+    """这笔分录是否已经落过账（`§4.2.9`：写序的第一道闸，先查再动余额）。"""
+    row = conn.execute(
+        "SELECT 1 FROM wallet_ledger WHERE room = ? AND operation_key = ? AND posting_no = ?",
+        (room, operation_key, posting_no),
+    ).fetchone()
+    return row is not None
+
+
+def _rollback_posting(conn: sqlite3.Connection) -> None:
+    """退回保存点；SQLite 已自行终止事务时不掩盖原始异常。"""
+    try:
+        conn.execute("ROLLBACK TO wallet_posting")
+        conn.execute("RELEASE wallet_posting")
+    except sqlite3.Error:
+        pass
+
+
 def _write_ledger(
     conn: sqlite3.Connection,
     *,
@@ -210,32 +230,43 @@ def credit(
     _check_text(reason, "reason")
     _check_text(operation_key, "operation_key")
 
-    # 上限检查放在 SQL 里，避免"读到旧值 → 在 Python 里算出溢出"的竞态：
-    # 余额已经接近上限时影响 0 行，下面依据"行是否存在"区分是溢出还是没建号。
-    cursor = conn.execute(
-        "UPDATE wallet SET balance = balance + ?, updated_at = ? "
-        "WHERE room = ? AND uid = ? AND currency = ? AND balance <= ?",
-        (amount, now, room, uid, currency, MAX_BALANCE - amount),
-    )
-    if cursor.rowcount == 0:
-        if _select_balance(conn, room, uid, currency) is None:
-            raise WalletUninitialized(f"钱包行缺失：room={room} uid={uid} currency={currency}")
-        raise WalletError(f"余额溢出上限，拒绝入账：currency={currency} amount={amount}")
+    # §4.2.9 写序：重放先于动账。分录已存在就直接抛，余额一分没动。
+    if _posting_exists(conn, room, operation_key, posting_no):
+        raise DuplicatePosting(room=room, operation_key=operation_key, posting_no=posting_no)
 
-    after = _require_balance(conn, room, uid, currency)
-    _write_ledger(
-        conn,
-        room=room,
-        uid=uid,
-        currency=currency,
-        delta=amount,
-        balance_after=after,
-        reason=reason,
-        ref=ref,
-        operation_key=operation_key,
-        posting_no=posting_no,
-        now=now,
-    )
+    conn.execute("SAVEPOINT wallet_posting")
+    try:
+        # 上限检查放在 SQL 里，避免"读到旧值 → 在 Python 里算出溢出"的竞态：
+        # 余额已经接近上限时影响 0 行，下面依据"行是否存在"区分是溢出还是没建号。
+        cursor = conn.execute(
+            "UPDATE wallet SET balance = balance + ?, updated_at = ? "
+            "WHERE room = ? AND uid = ? AND currency = ? AND balance <= ?",
+            (amount, now, room, uid, currency, MAX_BALANCE - amount),
+        )
+        if cursor.rowcount == 0:
+            if _select_balance(conn, room, uid, currency) is None:
+                raise WalletUninitialized(f"钱包行缺失：room={room} uid={uid} currency={currency}")
+            raise WalletError(f"余额溢出上限，拒绝入账：currency={currency} amount={amount}")
+
+        after = _require_balance(conn, room, uid, currency)
+        _write_ledger(
+            conn,
+            room=room,
+            uid=uid,
+            currency=currency,
+            delta=amount,
+            balance_after=after,
+            reason=reason,
+            ref=ref,
+            operation_key=operation_key,
+            posting_no=posting_no,
+            now=now,
+        )
+    except BaseException:
+        # 钱与分录必须同生同死：分录写失败时把余额退回保存点之前。
+        _rollback_posting(conn)
+        raise
+    conn.execute("RELEASE wallet_posting")
     return WalletEntry(
         currency=currency,
         delta=amount,
@@ -270,34 +301,45 @@ def debit(
     _check_text(reason, "reason")
     _check_text(operation_key, "operation_key")
 
-    cursor = conn.execute(
-        "UPDATE wallet SET balance = balance - ?, updated_at = ? "
-        "WHERE room = ? AND uid = ? AND currency = ? AND balance >= ?",
-        (amount, now, room, uid, currency, amount),
-    )
-    if cursor.rowcount == 0:
-        # 影响 0 行有两种含义，必须分开报：没建号（初始化异常）与钱不够（业务结果）。
-        current = _select_balance(conn, room, uid, currency)
-        if current is None:
-            raise WalletUninitialized(f"钱包行缺失：room={room} uid={uid} currency={currency}")
-        raise Insufficient(
-            room=room, uid=uid, currency=currency, amount=amount, balance=current
-        )
+    # §4.2.9 写序：重放先于动账。分录已存在就直接抛，余额一分没动。
+    if _posting_exists(conn, room, operation_key, posting_no):
+        raise DuplicatePosting(room=room, operation_key=operation_key, posting_no=posting_no)
 
-    after = _require_balance(conn, room, uid, currency)
-    _write_ledger(
-        conn,
-        room=room,
-        uid=uid,
-        currency=currency,
-        delta=-amount,
-        balance_after=after,
-        reason=reason,
-        ref=ref,
-        operation_key=operation_key,
-        posting_no=posting_no,
-        now=now,
-    )
+    conn.execute("SAVEPOINT wallet_posting")
+    try:
+        cursor = conn.execute(
+            "UPDATE wallet SET balance = balance - ?, updated_at = ? "
+            "WHERE room = ? AND uid = ? AND currency = ? AND balance >= ?",
+            (amount, now, room, uid, currency, amount),
+        )
+        if cursor.rowcount == 0:
+            # 影响 0 行有两种含义，必须分开报：没建号（初始化异常）与钱不够（业务结果）。
+            current = _select_balance(conn, room, uid, currency)
+            if current is None:
+                raise WalletUninitialized(f"钱包行缺失：room={room} uid={uid} currency={currency}")
+            raise Insufficient(
+                room=room, uid=uid, currency=currency, amount=amount, balance=current
+            )
+
+        after = _require_balance(conn, room, uid, currency)
+        _write_ledger(
+            conn,
+            room=room,
+            uid=uid,
+            currency=currency,
+            delta=-amount,
+            balance_after=after,
+            reason=reason,
+            ref=ref,
+            operation_key=operation_key,
+            posting_no=posting_no,
+            now=now,
+        )
+    except BaseException:
+        # 钱与分录必须同生同死：分录写失败时把余额退回保存点之前。
+        _rollback_posting(conn)
+        raise
+    conn.execute("RELEASE wallet_posting")
     return WalletEntry(
         currency=currency,
         delta=-amount,

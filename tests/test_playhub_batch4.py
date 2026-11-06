@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from plugins.playhub.app import App
 from plugins.playhub.core import Store
-from plugins.playhub.core import activity, clock
+from plugins.playhub.core import activity, clock, kv
 from plugins.playhub.core.clock import CN
 from plugins.playhub.engines import ranking
 from plugins.playhub.engines import moderation
@@ -325,7 +326,9 @@ class RenameTests(Batch4Base):
         self.assertEqual(self.kv("groupstat.rename_watch"), "0")
 
     def test_scan_now_detects_change(self):
-        self.seed_activity(UID_A, "2026-10-31", 1, nickname="旧名字")
+        # 基线是巡检快照（§4.2），不是 member_seen.nickname：后者会被发言昵称覆盖。
+        with self.store.tx() as conn:
+            kv.put(conn, ROOM, "groupstat.rename_snapshot", json.dumps({UID_A: "旧名字"}), self.clock())
         ctx = FakeCtx(
             {NAME_A: UID_A},
             {UID_A: "owner"},
@@ -485,17 +488,18 @@ class BlockTests(Batch4Base):
 # 接线自检
 # ---------------------------------------------------------------------------
 class Batch4BindingTests(unittest.TestCase):
-    def test_all_43_bound(self):
+    def test_all_actions_bound(self):
         self.assertEqual(CURRENT_BATCH, 4)
-        self.assertEqual(len(BINDINGS), 43)
-        self.assertEqual(check_bindings(), 43)
+        self.assertEqual(len(BINDINGS), 44)
+        self.assertEqual(check_bindings(), 44)
 
     def test_no_action_left_unplanned(self):
         self.assertEqual([a for a, b in ACTION_PLAN.items() if b is None], [])
 
     def test_batch4_actions_are_bound(self):
         for action in ("ranking.activity", "moderation.jail", "moderation.block",
-                       "groupstat.dive", "groupstat.invite", "groupstat.rename"):
+                       "groupstat.dive", "groupstat.invite", "groupstat.rename",
+                       "daily.fortune_explain"):
             with self.subTest(action=action):
                 self.assertIn(action, BINDINGS)
                 self.assertEqual(ACTION_PLAN[action], 4)

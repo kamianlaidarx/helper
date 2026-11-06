@@ -328,7 +328,10 @@ class FortuneTest(DailyCase):
                 before = self.coins()
                 self.clock.add()
                 reply = self.fortune(rng=FakeRng(roll))
-                self.assertTrue(reply.text.startswith(f"@小明\n🎋 抽到「{name}」"), reply.text)
+                # 第 4 批改小V 版式：签号 + 签等在第一行，签诗在虚线后。
+                self.assertTrue(reply.text.startswith("@小明\n🙏您抽到了第"), reply.text)
+                self.assertIn(f"· {name}！", reply.text)
+                self.assertIn("签诗：", reply.text)
                 self.assertIn(f"├ 金币：+{coin}", reply.text)
                 self.assertEqual(self.coins(), before + coin)
                 if diamond:
@@ -412,7 +415,10 @@ class FortuneTest(DailyCase):
             encoding="utf-8",
         )
         rows = load_fortune_bank(path)
-        self.assertEqual(rows, (("上上签", "唯一可用签文"),))
+        self.assertEqual([(row.tier, row.text) for row in rows], [("上上签", "唯一可用签文")])
+        self.assertEqual(rows[0].no, 4)          # 缺 no → 用文件行号
+        self.assertEqual(rows[0].id, "f-3")
+        self.assertEqual(rows[0].jie, "")        # 缺 jie → 解签时提示「还没写好」
         reply = self.fortune(rng=FakeRng(0))
         self.assertIn("唯一可用签文", reply.text)
 

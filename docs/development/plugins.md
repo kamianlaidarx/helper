@@ -114,6 +114,7 @@ def scheduled_greeting(self, params, ctx):
 | `ctx.contacts(expected_session=message.session_id)` | 扫描当前账号的好友及资料，需要 `contact.read` 能力 |
 | `ctx.group_member_name(room, wxid, expected_session=message.session_id)` | 查询群昵称，未设置时返回微信名 |
 | `ctx.group_member_role(room, wxid, expected_session=message.session_id)` | 查询群主、群管理员或普通群友身份，未确认时返回 `unknown` |
+| `ctx.chat_allowed(chat_id)` | 判断某个会话是否在 `chat_allowlist` 里；空白名单表示全部允许，配置异常时返回 `False` |
 
 每类文件有独立限制，见对应的消息章节。`ctx.send_voice` 发送已有音频；可选的 `voice_reply` 插件通过 Fish Audio 合成艾特对话的语音，见[语音回复](../messages/voice.md#fish-audio-文字转语音)。
 

@@ -1246,14 +1246,24 @@ class SocialEngine:
         )
 
     # -- 超时收尾（惰性，见模块 docstring）-----------------------------------
-    def _expire(self, conn, room: str, now: int) -> None:
+    def expire_room(self, conn, room: str, now: int) -> int:
+        """后台定时收尾（`§4.2` 的 `expire` 动作）：返回本次真正收掉的单数。
+
+        前台子命令还会惰性调一次，两边同路径、同 `operation_key`，谁先到谁生效，
+        后到的只会撞 `DuplicatePosting`，不会重复退款（`§4.2.9`）。
+        """
+        return self._expire(conn, room, now)
+
+    def _expire(self, conn, room: str, now: int) -> int:
+        """收 pending 与到期离婚；返回收掉的数量（后台动作的计数用）。"""
         # 所有 kind 的 pending 统一 24h 失效：否则 `pair_active_pair` 会把两人永久锁在
         # 「有一条待确认请求」上，五类关系都会卡死。
-        conn.execute(
+        cursor = conn.execute(
             "UPDATE pair SET state = 'ended', ended_at = ? "
             "WHERE room = ? AND state = 'pending' AND created_at <= ?",
             (now, room, now - PROPOSE_TTL),
         )
+        expired = int(cursor.rowcount or 0)
         rows = conn.execute(
             "SELECT key, value FROM kv WHERE room = ? AND key LIKE 'divorce:%'", (room,)
         ).fetchall()
@@ -1280,3 +1290,5 @@ class SocialEngine:
             )
             _audit(conn, now=now, room=room, actor=by, action="cmd:结婚",
                    detail={"sub": "divorce_timeout", "pair_id": pair_id})
+            expired += 1
+        return expired

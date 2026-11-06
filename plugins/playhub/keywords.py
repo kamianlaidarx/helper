@@ -61,6 +61,8 @@ TRIGGERS: tuple[Trigger, ...] = (
     # 3 抽签 / 求签
     Trigger("抽签", "daily", "daily.fortune", risk="low"),
     Trigger("求签", "daily", "daily.fortune", risk="low"),
+    # 3b 解签（第 4 批新增：只回当天那一签的释义，见 `DailyEngine.fortune_explain`）
+    Trigger("解签", "daily", "daily.fortune_explain", risk="low"),
     # 4 切磋 / 比武
     Trigger("切磋", "duel", "duel.challenge", needs_arg=True, bare_behavior="guide", risk="low"),
     Trigger("比武", "duel", "duel.challenge", needs_arg=True, bare_behavior="guide", risk="low"),
@@ -148,10 +150,10 @@ TRIGGERS: tuple[Trigger, ...] = (
     Trigger("帮助", "business", "business.help", risk="low"),
 )
 
-# 词账：43 主词 + 18 别名 = 61（§4「触发词账」+ 第 1 批新增的 `帮助`）。
-PRIMARY_COUNT = 43
+# 词账：44 主词 + 18 别名 = 62（§4「触发词账」+ 第 1 批新增的 `帮助` + 第 4 批新增的 `解签`）。
+PRIMARY_COUNT = 44
 ALIAS_COUNT = 18
-KEYWORD_COUNT = 61
+KEYWORD_COUNT = 62
 
 
 @dataclass(frozen=True)

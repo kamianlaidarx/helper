@@ -28,6 +28,9 @@ INVITE_DAYS_MAX = 90
 LIST_LIMIT = 10
 
 RENAME_KEY = "groupstat.rename_watch"
+#: 上次巡检看到的「群昵称」基线。必须与 `member_seen.nickname` 分开：后者会被
+#: 发言时的微信名覆盖，拿它当基线会把「换过群昵称的人」反复误报成刚改名。
+RENAME_SNAPSHOT_KEY = "groupstat.rename_snapshot"
 RENAME_SUBS = ("开", "关", "现在")
 
 DENIED = "这个操作只有群主和管理员能用"
@@ -60,6 +63,60 @@ def _parse_days(text: str, default: int, cap: int) -> tuple[int, str]:
 
 def _name_of(names: dict[str, str], uid: str) -> str:
     return names.get(uid) or uid
+
+
+# ---------------------------------------------------------------------------
+# 改名巡检的基线（前台「改名 现在」与后台定时动作共用，`§4.2`）
+# ---------------------------------------------------------------------------
+def watch_on(conn, room: str) -> bool:
+    """改名播报开关；读不到=开（`§4.2`：默认开着，`改名 关` 才停）。"""
+    return kv.get(conn, room, RENAME_KEY) != "0"
+
+
+def snapshot_of(rows) -> dict[str, str]:
+    """`[(uid, 名字)]` → 基线 `{uid: 名字}`；没名字的成员不写进基线。"""
+    return {uid: name for uid, name in rows if uid and name}
+
+
+def member_rows(ctx, room) -> list[tuple[str, str]] | None:
+    """`ctx.group_members(room)` → `[(uid, 昵称)]`；读不到快照返回 None。
+
+    后台改名巡检（`scheduler.run_rename`）与前台「改名 现在」共用这一份：
+    两处各写一遍，迟早会在「dict 用 wxid 还是 uid」上分叉。
+    """
+    getter = getattr(ctx, "group_members", None) if ctx is not None else None
+    if not callable(getter):
+        return None
+    try:
+        raw = getter(room)
+    except Exception:
+        return None
+    if raw is None:                     # 框架缓存未就绪（sdk：`group_members` 返回 None）
+        return None
+    rows: list[tuple[str, str]] = []
+    for row in raw or ():
+        if isinstance(row, dict):
+            uid = str(row.get("wxid") or row.get("uid") or "")
+            name = str(row.get("nickname") or row.get("wechat_name") or "")
+        else:
+            uid = str(getattr(row, "wxid", "") or "")
+            name = str(getattr(row, "nickname", "") or "")
+        if uid and name:
+            rows.append((uid, name))
+    return rows
+
+
+def diff_names(prev, rows) -> list[tuple[str, str, str]]:
+    """与基线比对，返回 `[(uid, 旧名, 新名)]`。
+
+    只报「两边都非空且不同」：新人只进基线不播报，读不到名字的成员也不误报。
+    """
+    changes: list[tuple[str, str, str]] = []
+    for uid, name in rows:
+        old = (prev or {}).get(uid, "")
+        if old and name and old != name:
+            changes.append((uid, old, name))
+    return changes
 
 
 class GroupStatEngine:
@@ -251,16 +308,15 @@ class GroupStatEngine:
             )
         store = store_of(game)
         now = self._now()
-        changes: list[tuple[str, str, str]] = []
         with store.tx() as conn:
-            known = activity.seen_names(conn, room)
-            for uid, name in rows:
-                old = known.get(uid, "")
-                if old and name and old != name:
-                    activity.record_nickname_change(
-                        conn, room=room, uid=uid, old=old, new=name, now=now
-                    )
-                    changes.append((uid, old, name))
+            # 基线用后台巡检写的同一份快照，两边谁先扫都不会把同一处改名报两遍。
+            prev = kv.get_json(conn, room, RENAME_SNAPSHOT_KEY) or {}
+            changes = diff_names(prev, rows)
+            for uid, old, new in changes:
+                activity.record_nickname_change(
+                    conn, room=room, uid=uid, old=old, new=new, now=now
+                )
+            kv.set_json(conn, room, RENAME_SNAPSHOT_KEY, snapshot_of(rows), now)
             for uid, name in rows:
                 activity.record(conn, room=room, uid=uid, day=clock.day_of(now), now=now, nickname=name)
 
@@ -284,27 +340,8 @@ class GroupStatEngine:
 
     # ------------------------------------------------------------------ 内部
     def _member_rows(self, ctx, room) -> list[tuple[str, str]] | None:
-        """`[(uid, 昵称)]`；读不到快照返回 None。"""
-        getter = getattr(ctx, "group_members", None) if ctx is not None else None
-        if not callable(getter):
-            return None
-        try:
-            raw = getter(room)
-        except Exception:
-            return None
-        if raw is None:                     # 框架缓存未就绪（sdk：`group_members` 返回 None）
-            return None
-        rows: list[tuple[str, str]] = []
-        for row in raw or ():
-            if isinstance(row, dict):
-                uid = str(row.get("wxid") or row.get("uid") or "")
-                name = str(row.get("nickname") or row.get("wechat_name") or "")
-            else:
-                uid = str(getattr(row, "wxid", "") or "")
-                name = str(getattr(row, "nickname", "") or "")
-            if uid and name:
-                rows.append((uid, name))
-        return rows
+        """`[(uid, 昵称)]`；读不到快照返回 None（后台巡检共用 `member_rows`）。"""
+        return member_rows(ctx, room)
 
     def _deny(self, ctx, room, uid, action) -> Reply | None:
         if self._feed is None:

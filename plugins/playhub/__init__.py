@@ -24,12 +24,23 @@ from pathlib import Path
 
 from .app import App
 from .core import Store
+from .scheduler import Scheduler
 
 # 存档根：`<project_root>/.runtime/playhub/<hash>/`，与 image_gallery 的布局同位。
 _RUNTIME_DIR = ".runtime"
 _PLUGIN_DIR = "playhub"
 _DB_NAME = "playhub.sqlite3"
 _ACCOUNT_HASH_LEN = 16
+
+
+def db_path_for(root: Path, account: str) -> Path:
+    """账号 → 存档路径 `<root>/.runtime/playhub/<sha256(account)[:16]>/playhub.sqlite3`。
+
+    前台 `_runtime()` 与后台调度器（`§4.2.3`）必须算出同一个文件，所以只留这一份实现。
+    """
+    digest = hashlib.sha256(account.encode("ascii")).hexdigest()[:_ACCOUNT_HASH_LEN]
+    return Path(root) / _RUNTIME_DIR / _PLUGIN_DIR / digest / _DB_NAME
+
 
 
 class Plugin:
@@ -41,11 +52,23 @@ class Plugin:
     """
 
     def on_load(self, ctx):
-        """只记住上下文；开库留给 `_runtime()`（此时账号还未知）。"""
+        """记住上下文并起后台线程；开库仍留给 `_runtime()`（此时账号还未知）。
+
+        后台调度器（`§4.2`）的账号在**第一次 tick 时**才读，所以这里不需要等登录
+        完成；起线程失败只记日志，前台玩法照常。
+        """
         self._ctx = ctx
         self._stores: dict[str, Store] = {}
         self._apps: dict[str, App] = {}
         self._warned = False
+        self._scheduler: Scheduler | None = None
+        try:
+            root = getattr(ctx, "project_root", None) or Path(__file__).resolve().parents[2]
+            self._scheduler = Scheduler(ctx=ctx, root=Path(root), logger=self._logger(ctx))
+            self._scheduler.start()
+        except Exception:
+            self._logger(ctx).exception("playhub 后台调度器启动失败；前台玩法不受影响")
+            self._scheduler = None
 
     # -- 运行期（按账号）-----------------------------------------------------
     def _runtime(self, ctx):
@@ -67,15 +90,10 @@ class Plugin:
 
         store = None
         try:
-            directory = (
-                Path(root)
-                / _RUNTIME_DIR
-                / _PLUGIN_DIR
-                / hashlib.sha256(account.encode("ascii")).hexdigest()[:_ACCOUNT_HASH_LEN]
-            )
-            directory.mkdir(parents=True, exist_ok=True)
+            path = db_path_for(root, account)
+            path.parent.mkdir(parents=True, exist_ok=True)
             # migrate() 幂等（schema.sql 全是 IF NOT EXISTS），每次进程内首次开库跑一遍。
-            store = Store(directory / _DB_NAME, account=account)
+            store = Store(path, account=account)
             store.migrate()
             app = App(store=store, repo_root=Path(root), logger=logger)
         except Exception:
@@ -130,7 +148,19 @@ class Plugin:
 
     # -- 卸载 ---------------------------------------------------------------
     def on_unload(self, ctx):
-        """逐个关连接（一个坏连接不影响其它），然后清空缓存。"""
+        """先停后台线程（等 10 秒），再逐个关前台连接（`§4.2.7`）。
+
+        顺序不能反：线程还在跑时关掉它正在用的库，异常会落在 tick 里，
+        日志看起来像「插件坏了」而不是「卸载了」。
+        """
+        scheduler = self._scheduler
+        if scheduler is not None:
+            try:
+                if not scheduler.stop():
+                    self._logger(ctx).warning("playhub 后台线程 10 秒内没停下，先关前台连接")
+            except Exception:
+                self._logger(ctx).exception("playhub 停止后台调度器失败")
+            self._scheduler = None
         for account, store in list(self._stores.items()):
             try:
                 store.close()

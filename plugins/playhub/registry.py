@@ -47,6 +47,7 @@ class Binding:
 BINDINGS: dict[str, Binding] = {
     "daily.signin": Binding("daily.signin", "daily", 1),
     "daily.fortune": Binding("daily.fortune", "daily", 1),
+    "daily.fortune_explain": Binding("daily.fortune_explain", "daily", 4),
     "ranking.top": Binding("ranking.top", "ranking", 1),
     # 帮助：不经引擎，由 app 直接回包（见 app.HELP_TEXT）。
     "business.help": Binding("business.help", "business", 1),
@@ -106,6 +107,7 @@ BINDINGS: dict[str, Binding] = {
 ACTION_PLAN: dict[str, int | None] = {
     "daily.signin": 1,
     "daily.fortune": 1,
+    "daily.fortune_explain": 4,
     "ranking.top": 1,
     "business.help": 1,
     "music.request": 3,
