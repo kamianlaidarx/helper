@@ -1005,12 +1005,12 @@ CREATE TABLE IF NOT EXISTS invite_daily (
   day          TEXT    NOT NULL,
   joins        INTEGER NOT NULL DEFAULT 0,
   leaves       INTEGER NOT NULL DEFAULT 0,
-  kicked       INTEGER NOT NULL DEFAULT 0,   -- 被移出（group_events 能区分，group_events.py:25-33）
+  kicked       INTEGER NOT NULL DEFAULT 0,   -- 被移出；当前恒 0（group_events 把「退出」和「被移出」都归为 leave）
   invite_joins INTEGER NOT NULL DEFAULT 0,   -- 带"邀请"语义来源的入群数
   PRIMARY KEY (room, day)
 ) WITHOUT ROWID;
 
--- 预留：等 group_events 提供邀请人后启用（当前 GroupMemberEvent 无 actor，group_events.py:43-49）
+-- 按人归属的邀请记录（§8.7 C1：生产者是 core/invite.py，由 app.py:_feed_members 调用）
 CREATE TABLE IF NOT EXISTS invite_credit (
   room     TEXT    NOT NULL,
   inviter  TEXT    NOT NULL,
@@ -1638,7 +1638,7 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 | 天气（第 3 批落地口径） | `adapters/outbound.WeatherProvider` 协议 + 默认 `OfflineProvider`（恒返回 `None`）：**没接服务就明说接不上，不编预报**；城市必填且 ≤12 字，缓存 10 分钟，失败不写缓存 |
 | 活跃榜（第 4 批落地口径） | 默认**本周**（`DEFAULT_PERIOD="week"`），参数词 `日/今日/今天`、`周/本周/这周`、`月/本月/这个月`、`总/总榜/全部`；区间由 `clock.range_of()` 算，**上界一律取「今天」**而不是周末/月末（未来没有数据，少扫空区间）；周的起点是 `today - timedelta(days=today.weekday())`（周一）；单位是「条」= `activity_daily.messages` 求和，同一句只记一次（命令消息不记） |
 | 潜水（第 4 批落地口径） | 天数默认 7、上限 90；判据是 `activity_daily.last_at` 距今天数 ≥ 天数；读的是 `member_seen` 的昵称快照；**只统计、不清人**（框架无踢人能力，`:1743` 的软禁言同理） |
-| 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）；事件没带邀请人时按人榜为空、只报群级，并在卡面上直说「框架的入群事件没带邀请人」 |
+| 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）。邀请人来自框架 `GroupMemberEvent.actor_id`（C1 已落地，见 §8.7）；`source == "membership"` 的名单差分补录**不产生归属**（`core/invite.py`）。计数口径：凡带成员 ID 的 join/leave 进 `invite_daily`，按 `evt:<room>:<kind>:<uid>:<day>` 幂等去重，重投的系统消息不会把人数记两遍。卡面措辞：有归属时「🚪 入群 N 次 · 邀请入群 N 次」，只有群级时「群级共 N 次邀请入群」，一条记录都没有时「📨 近 N 天没有入群记录」+「ℹ 邀请榜靠框架的入群事件，缺事件时这里就是空的」 |
 | 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**默认开**（kv 读不到 = 开），管理员发 `改名 关` 关闭；后台每天巡检一次并播报（§4.2.4 ①）；`现在` 走 `ctx.group_members(room)` 快照与改名基线 `groupstat.rename_snapshot` 比对（§4.2.4 ①，不再用 `member_seen`），快照返回 `None`（缓存未就绪）时明说「读不到群成员快照」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
 | 小黑屋（第 4 批落地口径） | 软禁言：被关期间**在 `route()` 之前**就返回静默（连「黑名单 列」也不回，§8.2）；单次上限 **60 分钟**、每日上限 **10 次**（`daily_counter` 键 `jail_set`）；`jail.until` 到期由任意 `小黑屋` 子命令惰性清理（**维持惰性，不做定时巡检**，2026-11-06 定）；`小黑屋 10` 这种缺目标形态直接拒绝（`target.isdigit() and not extra`）；列表卡标题带人数 |
 | 黑名单（第 4 批落地口径） | `scope='play'`，只在本插件内生效；被拉黑者与小黑屋同等待遇（`route()` 之前静默）；`加/删/列` 里 `列` 不需权限，`加/删` 需 owner/admin；`加` 用 `ON CONFLICT(room,uid,scope) DO UPDATE` 幂等，`删` 只删 `scope='play'` |
@@ -2037,7 +2037,7 @@ def resolve_workspace(ctx, msg) -> Path:
 
 ### 8.6 已知功能限制（需在帮助文案里对用户说明）
 
-1. **邀请统计依赖框架改动（C1）**：`GroupMemberEvent` 原本只有 `kind/room_id/member_id/nickname/source`（`group_events.py:43-49`），解析时邀请者信息被丢弃（`group_events.py:100-106` 只捕获 target 占位符，`:185` 只取 `name == role` 的 link）。v3 决定**改框架五处补 `actor_id`**（§8.7），改完后：能证明邀请人时按人统计、进邀请榜；`actor_id` 缺失（纯文本无链接、同名多义、链接不可验证）时**降级为群级计数**，按人榜显示「暂无可归属邀请记录」。代价是维护一个上游文件、需随身跟进上游更新（存在合并冲突）。
+1. **邀请统计依赖框架改动（C1，已落地 2026-11-06）**：`GroupMemberEvent` 原本只有 `kind/room_id/member_id/nickname/source`（`group_events.py:43-49`），解析时邀请者信息被丢弃。v3 已按 §8.7 改框架五处补 `actor_id`，现在的口径是：能证明邀请人时按人统计、进邀请榜；`actor_id` 缺失（纯文本无链接、角色词「群主/管理员/你」、名单差分补录、链接不可验证）时**降级为群级计数**，按人榜为空。**残留代价**：`wxbot_framework/` 是上游目录，这五处改动会产生上游合并冲突风险，需随身跟进上游更新（缓解与回归边界见 §8.7）。
 2. **接龙进行中关键词被吞**（`plugins/idiom_chain/__init__.py:110`）：接龙开局后任何非 `/` 文本都被当答案送判定，`签到` 也会被回一句「请输入一个完整的四字成语」。**不花 LLM 额度**（`judge.py:39-40` 本地短路），纯粹是刷屏噪音。解法与代价见 §2.7 方案 A/B/C，需改现有插件、未获批准。
 3. **机器人自己账号发的关键词不进插件**（`text.py:104-115` 的 `own_group_command` 白名单只放行四字中文与框架命令；playhub 的 62 个词全是 2–3 字）。这对正常使用无影响（playhub 另在 `on_message` 首行对 `is_self` 一律 return，见 §2.6.5），**只影响"用自己的号自测"**：自测请用另一个号（进验证群的运营号）。
 4. **小黑屋不是真禁言**（无 kick/mute 能力，`backend.py:10-31`）。
@@ -2050,27 +2050,29 @@ def resolve_workspace(ctx, msg) -> Path:
 
 **结论**：v1 改 `wxbot_framework/group_events.py` 一个文件、五处，把「事件操作者」作为 `actor_id` 带进事件；playhub 只在**已确认邀请入群且 `actor_id` 有效**时记 `invite_credit`。这是本方案里除 `idiom_chain:110` 之外**唯一**的框架改动，必须计入维护预算。
 
-| # | 位置 | 改动 |
+| # | 位置 | 改动（已落地） |
 |---|---|---|
-| 1 | `group_events.py:22` | `_ACTOR` 的非捕获组改成命名捕获 `(?P<actor>...)`，保留原有占位符与「你/群主/管理员」语法 |
-| 2 | `group_events.py:43-49` | 事件 dataclass 末尾新增 `actor_id: str = ""`，**保留旧五参数构造兼容**；语义是"事件操作者"，不保证等于邀请人 |
-| 3 | `group_events.py:100-106` | `_classify()` 同时返回目标标记与操作者标记，并同步更新所有调用方的解包 |
-| 4 | `group_events.py:109-202` | XML 分支按**操作者自己的链接**解析稳定 uid；纯文本只给昵称时 `actor_id=""`，**不拿本地同名成员猜身份** |
-| 5 | `group_events.py:407-408` | `observe_system()` 重建事件时显式保留 `actor_id`（或整体 `dataclasses.replace()`） |
+| 1 | `group_events.py:22` | `_ACTOR = rf"(?P<actor>{_ANY_PLACEHOLDER}\|你\|群主\|管理员)"`：非捕获组改成命名捕获，原有占位符与「你/群主/管理员」语法不变 |
+| 2 | `group_events.py:43-51` | `GroupMemberEvent` 末尾新增 `actor_id: str = ""`（带默认值，旧五参数构造仍可用）；语义是"事件操作者"，不保证等于邀请人 |
+| 3 | `group_events.py:103-115` | `_classify()` 返回 `(kind, target, actor)` 三元组，配 `_actor_of(role)`（`$占位符$` → 名字，角色词/空 → `""`）；`groupdict().get("actor")` 兼容没有 `_ACTOR` 的三条正则；`_text_events` 解包成 `kind, role, _actor` |
+| 4 | `group_events.py:119-135`、`:216-221` | XML 分支：`actor_id = "" if role == actor else _linked_single(links, actor)`；`_linked_single()` 取**操作者自己的** `link`，唯一成员、`username` 可校验才返回，否则 `""`；与目标同一人时也置空。纯文本分支操作者恒 `""` |
+| 5 | `group_events.py:441-442` | `observe_system()` 重建事件时显式带上 `event.actor_id` |
 
-另：`:303-355` 的成员快照差分事件**保持不动**，继续用默认空操作者。
+另：成员快照差分事件（`membership`）**保持不动**，继续用默认空操作者。
 
 **解析规则（写进实现与测试）**：
 
-1. 操作者链接必须唯一可验证、且属于操作者占位符；**不能把目标成员的链接当成邀请人**。
-2. 占位符「你」只在 `self_id` 有效时映射机器人自身；「群主/管理员」是角色词，不映射到猜测的成员。
-3. 操作者解析失败**不丢弃**有效成员事件：成员状态与群级统计照常更新。
-4. 邀请人为空 → 按人榜不加分，并记一条「邀请人缺失」的可观测计数（不是静默丢弃）。
-5. 同一入群事件只记一次邀请；`invite_credit` 的 `(room, inviter, invitee, day)` 主键只承担**同日去重**，不代表"所有重邀口径"。
+1. 操作者链接必须唯一可验证、且属于操作者占位符；**不能把目标成员的链接当成邀请人**（`role == actor` 时直接置空，`_linked_single` 不复用目标 `link`）。
+2. 占位符「你」只在 `self_id` 有效时映射机器人自身；「群主/管理员」是角色词，不映射到猜测的成员（`_actor_of` 只接受 `$…$`）。
+3. 操作者解析失败**不丢弃**有效成员事件：成员状态与群级统计照常更新，`actor_id` 留空。
+4. 邀请人为空 → 按人榜不加分。可观测性靠 `invite_daily` 里 `joins - invite_joins` 的差（既有列，不新增计数器）。
+5. 同一入群事件只记一次邀请：`App._feed_members` 先用 `idem.claim()` 占 `evt:<room>:<kind>:<uid>:<day>`，占不下整条跳过；`invite_credit` 的 `(room, inviter, invitee, day)` 主键只承担**同日去重**。
 
-**消费侧约束**：`adapters/memberfeed.py` 只把「已确认邀请入群 + 有效 `actor_id`」的事件计入 `invite_credit`；成员快照差分补录的事件**不得**生成邀请归属。`runtime.py` 的 `asdict(event)` 会自然携带新字段，无需额外改动。
+**消费侧约束（落地版本，与 v1 计划的不同处）**：v1 计划写的 `adapters/memberfeed.py` 并不存在——实际实现是 `plugins/playhub/core/invite.py`（`record()`）+ `plugins/playhub/app.py:_feed_members()`，在 `handle_message` 里 `is_self` 之后、关键词路由之前调用，只记账、永不回复；`source == "membership"` 的补录**不产生邀请归属**（`core/invite.py` 的 `CREDITED_SOURCES`）。`runtime.py` 的 `asdict(event)` 自然携带新字段，无需改动。
 
-**回归边界**：`plugins/group_notice/__init__.py:18-46` 按字典键读 `kind/room_id/member_id/nickname`，多出的 `actor_id` 不影响消费；欢迎/退群消息的唯一所有权仍在 `group_notice`，playhub 不发第二份欢迎。改完必须验证五个反向用例：①新正则改变目标识别 → 欢迎缺失或错人；②把邀请人当目标成员 → 双欢迎；③新返回元组未同步解包 → 系统消息解析失败；④改动事件去重或基线 → 重复欢迎；⑤`observe_system()` 重建丢邀请人。
+**回归边界**：`plugins/group_notice/__init__.py:18-46` 按字典键读 `kind/room_id/member_id/nickname`，多出的 `actor_id` 不影响消费；欢迎/退群消息的唯一所有权仍在 `group_notice`，playhub 不发第二份欢迎。五个反向用例已在 `tests/test_group_events.py` 落成断言：①新正则改变目标识别 → 欢迎缺失或错人；②把邀请人当目标成员 → 双欢迎；③新返回元组未同步解包 → 系统消息解析失败；④改动事件去重或基线 → 重复欢迎；⑤`observe_system()` 重建丢邀请人。
+
+**测试**：`tests/test_group_events.py`（邀请人→`actor_id`、角色词/无操作者置空、目标链接不复用、缺邀请人链接仍产事件、纯文本不猜人、`observe_system` 保真、移出操作者）；`tests/test_playhub_invite.py` 12 例（群级计数、按人归属、`membership` 不归属、`actor == member` 丢弃、重投只记一次、同群两人同日各记一次、别的群忽略、不进活跃榜、非进退群系统消息吞掉、普通消息通路不受影响、`邀请` 卡片用到真实事件）。
 
 **风险（必读）**：`wxbot_framework/` 是上游目录，**这五处改动会产生上游合并冲突风险** —— 上游更新若落在同一区域（`_ACTOR` 定义、`_classify()` 返回值、事件 dataclass 字段、`observe_system()`），每次合并都要人工重解。缓解：补丁**限制在这一个文件**、给解析器固定输入样例与输出断言（`tests/playhub/test_invite.py` 直接调框架解析器，同时钉住 `group_notice` 的消费契约），并把跟进上游的工时计入维护预算。**不改的代价**：只有群级进退人数，按人邀请榜只能显示「暂无可归属邀请记录」。v3 选择改，因为邀请榜是已拍板的 v1 四榜之一。
 

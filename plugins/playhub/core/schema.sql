@@ -268,12 +268,12 @@ CREATE TABLE IF NOT EXISTS invite_daily (
   day          TEXT    NOT NULL,
   joins        INTEGER NOT NULL DEFAULT 0,
   leaves       INTEGER NOT NULL DEFAULT 0,
-  kicked       INTEGER NOT NULL DEFAULT 0,   -- 被移出（group_events 能区分，group_events.py:25-33）
+  kicked       INTEGER NOT NULL DEFAULT 0,   -- 被移出；当前恒 0（group_events 把「退出」和「被移出」都归为 leave）
   invite_joins INTEGER NOT NULL DEFAULT 0,   -- 带"邀请"语义来源的入群数
   PRIMARY KEY (room, day)
 ) WITHOUT ROWID;
 
--- 预留：等 group_events 提供邀请人后启用（当前 GroupMemberEvent 无 actor，group_events.py:43-49）
+-- 按人归属的邀请记录（§8.7 C1 起有生产者：core/invite.py，由 app.py:_feed_members 调用）
 CREATE TABLE IF NOT EXISTS invite_credit (
   room     TEXT    NOT NULL,
   inviter  TEXT    NOT NULL,

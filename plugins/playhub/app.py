@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from .core import activity, clock, idem, render, switches
+from .core import activity, clock, idem, invite, render, switches
 from .core.menus import menu_for
 from .engines import GameRuntime, Reply, build_engines, msg_nickname
 from .engines import moderation
@@ -114,6 +114,10 @@ class App:
         if getattr(msg, "is_self", False):
             return None
 
+        # 群成员事件（§8.7 C1）：进群/退群/被移出只记统计，不参与任何玩法与排行。
+        if self._feed_members(msg):
+            return None
+
         text = getattr(msg, "text", None)
         if not isinstance(text, str) or not text.strip():
             return None
@@ -185,6 +189,63 @@ class App:
             )
             return Reply(ERROR_TEXT, cmd.action)
         return reply
+
+    # -- 群成员事件（§8.7 C1）-----------------------------------------------
+    def _feed_members(self, msg) -> bool:
+        """群系统消息里的进退群事件：只记账，永远不回复。
+
+        返回 True 表示这条消息已经处理完了——包括「是群系统消息但不是进退群」，
+        这种 10002 消息也不该再落到关键词路由上（正文全是系统模板文本）。
+        `group_event` 由框架解析后塞进 `message.data`（`wxbot_framework/runtime.py`），
+        结构不对就当没这回事，交给后面的正常通路。
+        """
+        data = getattr(msg, "data", None)
+        if not isinstance(data, dict):
+            return False
+        event = data.get("group_event")
+        if not isinstance(event, dict) or not event:
+            return False
+        room = getattr(msg, "chat_id", "") or ""
+        if not room or event.get("room_id") != room:
+            return False
+        kind = event.get("kind")
+        member_id = event.get("member_id") or ""
+        if kind not in ("join", "leave") or not member_id:
+            return True
+        if self._store is None:
+            return True
+        now = self._now()
+        day = clock.day_of(now)
+        # 事件没有消息 id（`GroupMemberEvent` 只有人，见 §8.6），只能按
+        # `evt:<room>:<kind>:<uid>:<day>` 去重：重投的同一条系统消息不会把人数记两遍。
+        # 占不下就整条跳过——和 `_claim` 一样，身份不明时宁可少记一次。
+        try:
+            claimed = idem.claim(
+                self._store, f"evt:{room}:{kind}:{member_id}:{day}", scope=f"evt.{kind}", now=now
+            )
+        except Exception:
+            self._log.debug("群成员事件幂等键写入失败，本条不记：room=%s kind=%s", room, kind,
+                            exc_info=True)
+            return True
+        if not claimed:
+            self._log.debug("重复的群成员事件已忽略：room=%s kind=%s uid=%s", room, kind, member_id)
+            return True
+        try:
+            with self._store.tx() as conn:
+                invite.record(
+                    conn,
+                    room=room,
+                    kind=kind,
+                    member_id=str(member_id),
+                    now=now,
+                    day=day,
+                    actor_id=str(event.get("actor_id") or ""),
+                    source=str(event.get("source") or ""),
+                )
+        except Exception:
+            # 记账失败不影响任何玩法：这条消息本来也不产生回复。
+            self._log.debug("群成员事件记账失败：room=%s kind=%s", room, kind, exc_info=True)
+        return True
 
     # -- 消息级幂等（§4.2.10）-----------------------------------------------
     def _claim(self, msg, action: str) -> bool:

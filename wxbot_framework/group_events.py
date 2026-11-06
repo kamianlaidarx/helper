@@ -19,7 +19,7 @@ _NAME_HINT_SECONDS = 60
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _PLACEHOLDER = r"\$(?P<target>[A-Za-z0-9_]{1,64})\$"
 _ANY_PLACEHOLDER = r"\$[A-Za-z0-9_]{1,64}\$"
-_ACTOR = rf"(?:{_ANY_PLACEHOLDER}|你|群主|管理员)"
+_ACTOR = rf"(?P<actor>{_ANY_PLACEHOLDER}|你|群主|管理员)"
 _JOIN = r"加入(?:了)?群聊"
 _REMOVE = r"移出(?:了)?群聊"
 _PATTERNS = (
@@ -47,6 +47,9 @@ class GroupMemberEvent:
     member_id: str
     nickname: str
     source: str
+    # 事件的操作者（邀请人、移出者）。只有结构化模板的 `$占位符$` 才映射得到；
+    # 「你 / 群主 / 管理员」这类角色词、纯文本系统消息、名单差分一律留空，不猜人。
+    actor_id: str = ""
 
 
 def _room(value):
@@ -97,13 +100,39 @@ def _leaf(parent, tag, *, required=True):
     return value.text or ""
 
 
+def _actor_of(role):
+    """`$占位符$` → 占位符名；「你/群主/管理员」这类角色词返回空串（不猜人）。"""
+    if not role or not role.startswith("$") or not role.endswith("$") or len(role) <= 2:
+        return ""
+    return role[1:-1]
+
+
 def _classify(template):
     normalized = template.translate(_TEMPLATE_QUOTES)
     for kind, pattern in _PATTERNS:
         match = pattern.fullmatch(normalized)
         if match:
-            return kind, match.group("target")
+            return kind, match.group("target"), _actor_of(match.groupdict().get("actor"))
     return None
+
+
+def _linked_single(links, role):
+    """按占位符名取 `link` 里唯一成员的 username；取不到或不合规就返回空串。"""
+    if not role:
+        return ""
+    try:
+        selected = [link for link in links.findall("link") if link.get("name") == role]
+        if len(selected) != 1:
+            return ""
+        members = selected[0].findall("memberlist/member")
+        if len(members) != 1:
+            return ""
+        actor_id = _leaf(members[0], "username").strip()
+        if not actor_id:
+            return ""
+        return _member_id(actor_id)
+    except GroupEventError:
+        return ""
 
 
 def _text_events(content, room_id, self_id):
@@ -116,10 +145,11 @@ def _text_events(content, room_id, self_id):
     # 非好友加入时，隐私提示可能先于成员资料到达。它仅提供名字，
     # 不能独立触发通知，仍须通过连续名单快照确认唯一的成员变化。
     privacy_hint = _PRIVACY_NAME_HINT.fullmatch(template.translate(_TEMPLATE_QUOTES))
-    classified = ("join", privacy_hint.group("target")) if privacy_hint else _classify(template)
+    # 纯文本系统消息没有可核对的成员 ID，操作者同样没有：`actor_id` 留空。
+    classified = ("join", privacy_hint.group("target"), "") if privacy_hint else _classify(template)
     if not classified:
         return ()
-    kind, role = classified
+    kind, role, _actor = classified
     if not role.startswith("quoted_"):
         return ()
     index = int(role.removeprefix("quoted_"))
@@ -180,11 +210,14 @@ def parse_group_system_message(content: str, *, msg_type: int, room_id: str,
     classified = _classify(_leaf(template, "template"))
     if not classified:
         return ()
-    kind, role = classified
+    kind, role, actor = classified
     links = _single(template, "link_list")
     selected = [link for link in links.findall("link") if link.get("name") == role]
     if len(selected) != 1:
         raise GroupEventError("群系统 XML 缺少唯一的目标成员列表")
+    # 邀请人/移出者：只认**另一个**占位符的链接；同名占位符（或角色词）不认，
+    # 免得把目标成员自己的链接当成邀请人（`§8.7` C1）。
+    actor_id = "" if role == actor else _linked_single(links, actor)
     members = _single(selected[0], "memberlist")
     result, seen = [], set()
     for member in members.findall("member"):
@@ -198,7 +231,8 @@ def parse_group_system_message(content: str, *, msg_type: int, room_id: str,
         if key in seen:
             continue
         seen.add(key)
-        result.append(GroupMemberEvent(kind, room_id, member_id, nickname, "system_structured"))
+        result.append(GroupMemberEvent(kind, room_id, member_id, nickname, "system_structured",
+                                       actor_id if actor_id and actor_id != member_id else ""))
     return tuple(result)
 
 
@@ -405,7 +439,7 @@ class GroupMembershipTracker:
                 while len(state.expected) > self.max_members:
                     state.expected.pop(next(iter(state.expected)))
                 result.append(GroupMemberEvent(event.kind, room_id, event.member_id, nickname,
-                                               event.source))
+                                               event.source, event.actor_id))
             return tuple(result)
 
     def close(self):

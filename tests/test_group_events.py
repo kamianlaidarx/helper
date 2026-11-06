@@ -47,10 +47,48 @@ class ParserTests(unittest.TestCase):
     def test_structured_join_and_immutable_public_shape(self):
         event, = self.parse(join())
         self.assertEqual(asdict(event), {"kind": "join", "room_id": ROOM, "member_id": NEW,
-                                        "nickname": "新群友", "source": "system_structured"})
+                                        "nickname": "新群友", "source": "system_structured",
+                                        "actor_id": ""})
         with self.assertRaises(FrozenInstanceError):
             event.member_id = ALICE
         self.assertFalse(hasattr(event, "__dict__"))
+
+    def test_inviter_placeholder_becomes_actor_id(self):
+        content = system('「$username$」邀请「$names$」加入了群聊',
+                         username=[(ALICE, "邀请者")], names=[(NEW, "新朋友")])
+        event, = self.parse(content)
+        self.assertEqual((event.kind, event.member_id, event.actor_id), ("join", NEW, ALICE))
+
+    def test_role_words_and_snapshot_diffs_have_no_actor(self):
+        cases = (
+            ('"$username$"加入了群聊', {"username": [(NEW, "新群友")]}),          # 无操作者占位符
+            ('群主将"$username$"移出了群聊', {"username": [(ALICE, "小艾")]}),   # 角色词不是人
+        )
+        for template, links in cases:
+            with self.subTest(template=template):
+                for event in self.parse(system(template, **links)):
+                    self.assertEqual(event.actor_id, "")
+
+    def test_kickout_actor_placeholder_becomes_actor_id(self):
+        content = system('"$admin$"将"$username$"移出了群聊',
+                         admin=[(BOB, "管理员")], username=[(ALICE, "小艾")])
+        event, = self.parse(content)
+        self.assertEqual((event.kind, event.member_id, event.actor_id), ("leave", ALICE, BOB))
+
+    def test_target_link_is_never_reused_as_the_inviter(self):
+        content = system('"$username$"邀请"$username$"加入了群聊', username=[(NEW, "新群友")])
+        for event in self.parse(content):
+            self.assertEqual(event.actor_id, "")
+
+    def test_missing_actor_link_still_yields_the_join(self):
+        content = system('"$inviter$"邀请"$username$"加入了群聊', username=[(NEW, "新群友")])
+        event, = self.parse(content)
+        self.assertEqual((event.kind, event.member_id, event.actor_id), ("join", NEW, ""))
+
+    def test_plain_system_text_never_guesses_the_inviter(self):
+        events = self.parse('"邀请人"邀请"被邀请者"加入了群聊', msg_type=10000)
+        event, = events
+        self.assertEqual((event.nickname, event.source, event.actor_id), ("被邀请者", "system_text", ""))
 
     def test_invitation_selects_invitees_not_inviter_and_deduplicates_members(self):
         content = system('「$username$」邀请「$names$」加入了群聊',
@@ -186,6 +224,13 @@ class TrackerTests(unittest.TestCase):
                          {("leave", ALICE, "群昵称小艾"), ("join", NEW, "新人昵称")})
         self.assertTrue(all(e.source == "membership" for e in events))
         self.assertEqual(self.tracker.update(ROOM, changed), ())
+
+    def test_inviter_id_survives_the_tracker(self):
+        self.start()
+        content = system('「$username$」邀请「$names$」加入了群聊',
+                         username=[(ALICE, "邀请者")], names=[(NEW, "新朋友")])
+        event, = self.observe(content, sequence=1)
+        self.assertEqual((event.kind, event.member_id, event.actor_id), ("join", NEW, ALICE))
 
     def test_none_empty_bad_or_missing_self_snapshot_never_causes_mass_leave(self):
         self.start()
