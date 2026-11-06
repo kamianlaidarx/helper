@@ -13,7 +13,8 @@
    之后调 `ctx.reply()`；发送失败只记日志，绝不抛回框架——框架会把异常
    记成插件故障（`wxbot_framework/plugins.py:104-108`）。
 
-本批没有附件、没有慢活执行器（`adapters/executor.py` 属第 3 批），
+本批有慢活执行器（`adapters/executor.py`，§2.5）：天气的两跳 HTTP 交给 worker，
+回调线程不再等网络；worker 不碰 `Store`，落库由 `App._flush()` 在下一条消息开头执行。
 `Reply` 只有 `text` 与 `action` 两个字段（`plugins/playhub/engines/__init__.py:27-40`）。
 """
 from __future__ import annotations
@@ -22,6 +23,7 @@ import hashlib
 import logging
 from pathlib import Path
 
+from .adapters.executor import Executor
 from .app import App
 from .core import Store
 from .scheduler import Scheduler
@@ -63,6 +65,12 @@ class Plugin:
         self._warned = False
         self._scheduler: Scheduler | None = None
         try:
+            self._executor = Executor(logger=self._logger(ctx))
+        except Exception:
+            # 起不了线程池不影响任何同步玩法：天气会退回回调内查询。
+            self._logger(ctx).exception("playhub 慢活执行器启动失败；天气退回同步查询")
+            self._executor = None
+        try:
             root = getattr(ctx, "project_root", None) or Path(__file__).resolve().parents[2]
             self._scheduler = Scheduler(ctx=ctx, root=Path(root), logger=self._logger(ctx))
             self._scheduler.start()
@@ -97,7 +105,8 @@ class Plugin:
             store.migrate()
             # config 是 `bot_config.json → plugins.playhub` 那一节；目前只有天气用得到。
             app = App(store=store, repo_root=Path(root), logger=logger,
-                      config=getattr(ctx, "config", None))
+                      config=getattr(ctx, "config", None),
+                      executor=getattr(self, "_executor", None))
         except Exception:
             if store is not None:
                 try:
@@ -163,6 +172,14 @@ class Plugin:
             except Exception:
                 self._logger(ctx).exception("playhub 停止后台调度器失败")
             self._scheduler = None
+        # 执行器要在关库之前收手：它的延迟落库队列写的就是这些库。
+        executor = getattr(self, "_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown()
+            except Exception:
+                self._logger(ctx).exception("playhub 关闭慢活执行器失败")
+            self._executor = None
         for account, store in list(self._stores.items()):
             try:
                 store.close()

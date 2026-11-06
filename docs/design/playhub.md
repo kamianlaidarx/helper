@@ -204,6 +204,12 @@ content/playhub/                 ← 仓库级题库/文案（不在 plugins/ �
 
 **执行编排分批落地**：第 1 批由 `app.py` **直连发送**，不引入 `adapters/executor.py`（表中 42 号的预算留到第 3 批接入）；本批**禁止 HTTP / LLM / 图片任务进入回调**，进度边界进 §7 第 1 批验收第 6 条。
 
+**2026-11-06：`adapters/executor.py` 已落地**（221 行，`DEFAULT_WORKERS=4` / `DEFAULT_QUEUE_SIZE=32` / `DEFAULT_TIMEOUT=3 s` / 延迟队列 256 条）。分工按 §2.5 第 3、4 条固定下来：
+- **worker 只算不写**：天气的两跳 HTTP 与渲染跑在 worker，发消息直接调 `ctx.reply`（发送路径本就有 `sdk._send_lock`，`scheduler.run_rename` 也早已在 daemon 线程发群消息），**不碰 `Store`**。
+- **落库回到插件线程**：worker 需要写缓存时 `executor.defer(...)` 入队，由 `App._flush()` 在**下一条消息开头**执行。代价是「刚查完立刻再问一次」可能还没写进缓存（多花一次额度），换来的是不再有跨线程事务。
+- **队列满 → 退化成同步**：`submit()` 返回 `False` 时 `OutboundEngine` 当场同步查，宁可慢几秒也不丢查询。
+- **超时只记账**：线程无法中断，`timeout` 只在任务结束后量一下、超了记警告；真正的超时保证来自 transport（天气是 `weather_timeout_seconds`）。
+
 关键词表放 `keywords.py` 的代码常量里，**不放 `content/`**：它是路由契约（改一个词会改变谁响应什么），必须与引擎代码同版本、同快照；题库/文案才是可以在运行期热改的内容。§4 的表格由 `keywords.py` 直出（有一个测试断言"文档表格里的词数 == 代码里的词数"，允许文档手写但跑测试校验）。
 
 ### 1.4 为什么不是另一种切法
@@ -486,6 +492,7 @@ def blocked(conn, room, uid) -> bool
 3. **慢活（HTTP/LLM/图片）走 `adapters/executor.py`**：有界 `ThreadPoolExecutor(max_workers=4, queue=32)`，任务内部超时 3 s，结果放进「待发包」。
    - 主路径：任务完成时直接 `ctx.send_text(chat_id, ...)`。`sdk.py:111-156` 的发送路径有 `self._lock` / `self._send_lock` 与 `delivery_guard`，设计上支持多线程调用；**但跨线程调用的严格安全性尚未在有测试覆盖的场景下验证（未核实）**。
    - 兜底路径（若跨线程发送被证实不安全）：执行器只往内存 `PendingOut` 里塞结果，由下一次 `on_message` / `on_schedule` 统一 flush。延迟最多一个心跳周期，但绝不跨线程碰连接。
+   - **2026-11-06 落地口径**：发送走主路径（worker 直接 `ctx.reply`，与 `scheduler.run_rename` 一致，且发送有 `_send_lock`）；**`Store` 上的写入一律走兜底路径**——`executor.defer()` 入队 + `App._flush()` 在回调线程执行。`PendingOut` 这一层没有单独实现，等价语义由 defer 队列提供。
 4. **执行器线程禁止碰 `Store`**：DB 只在插件线程使用，连接永不跨线程。
 5. **每命令异常兜底**：`try/except Exception` → `logger.exception` + 审计一行 + 回一句「这个玩法暂时出错了」；异常绝不上抛（上抛会记任务失败，`docs/development/plugins.md:92`）。
 6. **功能开关**：`kv` 里 `feature.<engine>`，关闭时命令静默忽略，用于线上出问题时只关一个玩法而不停插件。
@@ -1635,7 +1642,7 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 | 点歌（第 3 批落地口径） | 只登记队列（`kv` 的 `music:queue`，上限 **5** 首）并报排位，**不发音频**；每人 30 秒冷却（`music:cd:<uid>`）；队列在内存级的 `kv` 里，机器人重启即清空 |
 | 文案（第 3 批落地口径） | 主题 日常/情话/挽尊/打气/傲娇/沙雕，游标按主题分别存 `kv`（`copy:cursor:<主题>`）；**游标先自增再取模**，所以每组第一次拿到的是第 2 条，随后顺序轮完再回到第 1 条——语义是「再发一次换下一条」，不是「从第一条开始」 |
 | 群空间（第 3 批落地口径） | 只读聚合（成员档案/在册关系/宝宝/群内金币与钻石总量/背包件数），缓存键按**整点**（`space:<YYYY-MM-DDTHH>`），每小时最多重算一次；写缓存用独立事务，不在只读事务里升级 |
-| 天气（第 3 批落地口径） | `adapters/outbound.WeatherProvider` 协议 + 默认 `OfflineProvider`（恒返回 `None`）：**没接服务就明说接不上，不编预报**；城市必填且 ≤12 字，缓存 10 分钟，失败不写缓存。**2026-11-06 选型定案：和风天气 QWeather v7**（`QWeatherProvider`，两跳：城市名 → LocationID → 3d 预报）。配置在 `bot_config.json → plugins.playhub`：`weather_provider: "qweather"` + `weather_api_key` + **`weather_api_host`（必填，形如 `abc123.re.qweatherapi.com`）**，可选 `weather_geo_host`、`weather_timeout_seconds`（默认 3，夹在 `0 < t ≤ 10`）。**2026-11-06 实测：旧公共域名 `devapi.qweather.com` 对新 key 回 404/403，必须用账号专属 API Host**；一个域名同时服务 geo 与 weather，只填 `weather_api_host` 时 geo 自动跟随。另实测该域名**无视 `Accept-Encoding: identity` 直接回 gzip**，传输层因此解压（`_maybe_gunzip`，解压后仍受 64 KiB 上限约束，防 gzip 炸弹）——不解压的症状是「key 正确但天气永远不可用」；缺 key / 名字不认识 / 值非法一律退回离线（失败关闭）。任何失败（网络、超时、码值非 200、JSON 坏、超长、主机名含 `/`/空格/`:`）都返回 `None` 不抛；**连续 3 次失败熔断 5 分钟**（`FAIL_THRESHOLD`/`BREAKER_SECONDS`），「查无此城」（码 404）不计入失败 |
+| 天气（第 3 批落地口径） | `adapters/outbound.WeatherProvider` 协议 + 默认 `OfflineProvider`（恒返回 `None`）：**没接服务就明说接不上，不编预报**；城市必填且 ≤12 字，缓存 10 分钟，失败不写缓存。**2026-11-06 选型定案：和风天气 QWeather v7**（`QWeatherProvider`，两跳：城市名 → LocationID → 3d 预报）。配置在 `bot_config.json → plugins.playhub`：`weather_provider: "qweather"` + `weather_api_key` + **`weather_api_host`（必填，形如 `abc123.re.qweatherapi.com`）**，可选 `weather_geo_host`、`weather_timeout_seconds`（默认 3，夹在 `0 < t ≤ 10`）。**2026-11-06 实测：旧公共域名 `devapi.qweather.com` 对新 key 回 404/403，必须用账号专属 API Host**；一个域名同时服务 geo 与 weather，只填 `weather_api_host` 时 geo 自动跟随。另实测该域名**无视 `Accept-Encoding: identity` 直接回 gzip**，传输层因此解压（`_maybe_gunzip`，解压后仍受 64 KiB 上限约束，防 gzip 炸弹）——不解压的症状是「key 正确但天气永远不可用」；缺 key / 名字不认识 / 值非法一律退回离线（失败关闭）。任何失败（网络、超时、码值非 200、JSON 坏、超长、主机名含 `/`/空格/`:`）都返回 `None` 不抛；**连续 3 次失败熔断 5 分钟**（`FAIL_THRESHOLD`/`BREAKER_SECONDS`），「查无此城」（码 404）不计入失败。**执行模型（2026-11-06）**：两跳 HTTP 走 `adapters/executor.py` 的 worker，回调线程不阻塞、也不回「正在查」，结果由 worker 直接发卡；worker 不碰 `Store`，缓存用 `defer` 交回插件线程、在下一条消息开头的 `flush()` 落库（所以「刚查完立刻再问」可能还没命中缓存）；执行器队列满时退化同步查询，宁可慢不丢查询 |
 | 活跃榜（第 4 批落地口径） | 默认**本周**（`DEFAULT_PERIOD="week"`），参数词 `日/今日/今天`、`周/本周/这周`、`月/本月/这个月`、`总/总榜/全部`；区间由 `clock.range_of()` 算，**上界一律取「今天」**而不是周末/月末（未来没有数据，少扫空区间）；周的起点是 `today - timedelta(days=today.weekday())`（周一）；单位是「条」= `activity_daily.messages` 求和，同一句只记一次（命令消息不记） |
 | 潜水（第 4 批落地口径） | 天数默认 7、上限 90；判据是 `activity_daily.last_at` 距今天数 ≥ 天数；读的是 `member_seen` 的昵称快照；**只统计、不清人**（框架无踢人能力，`:1743` 的软禁言同理） |
 | 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）。邀请人来自框架 `GroupMemberEvent.actor_id`（C1 已落地，见 §8.7）；`source == "membership"` 的名单差分补录**不产生归属**（`core/invite.py`）。计数口径：凡带成员 ID 的 join/leave 进 `invite_daily`，按 `evt:<room>:<kind>:<uid>:<day>` 幂等去重，重投的系统消息不会把人数记两遍。卡面措辞：有归属时「🚪 入群 N 次 · 邀请入群 N 次」，只有群级时「群级共 N 次邀请入群」，一条记录都没有时「📨 近 N 天没有入群记录」+「ℹ 邀请榜靠框架的入群事件，缺事件时这里就是空的」 |
@@ -1966,6 +1973,13 @@ def resolve_workspace(ctx, msg) -> Path:
 - 第 4 批剩余（都是定时侧，2026-11-06 改为插件自管线程，见 §4.2）：改名巡检、离婚超时退款、收题与 `idem`/`audit` 清理、发工资、周榜发银箱共 5 个动作，落在新文件 `plugins/playhub/scheduler.py`；不绑 `plan_id/revision`、不做群内批准。`daily_quiz`/`daily_almanac`/`daily_report`/`space_refresh` 不做（不在 47 项内）；第 46 项只是用户在控制台自配的定时文本。另含 §4.2.9 钱包写序修复、§4.2.10 消息级幂等、框架 `ctx.chat_allowed`。
 - 三条踩坑（已写进代码注释）：①`ctx.group_members()` 缓存未就绪返回 `None`，**不能** `raw or ()` 当空列表，否则「读不到快照」会被误报成「没人改名」；②`小黑屋 10` 的目标位会解析成数字，必须先判「纯数字且无后续」再回「要点人」；③`render.result()` 的 headline 与 `render.head()` 都写标题会重复一行，列表卡只用 headline 带人数。
 
+**落地进度（2026-11-06，收尾批）**
+
+- 新增 `adapters/executor.py`（221 行，§2.5 第 3、4 条）：有界线程池 `workers=4` / `queue_size=32` / `timeout=3 s`，`submit()` 拿不到名额就返回 `False` 由调用方退化；`defer()` + `flush()` 是「worker 不碰 `Store`」的落地形态（`App._flush()` 在每条消息开头执行）；`shutdown()` 丢弃延迟队列（卸载时库马上关，硬写只产生噪音）。超时只记账、不中断，已在模块 docstring 写明。
+- `engines/outbound.py` 天气改为「有执行器走异步、队列满退化同步」：异步路径**不回「正在查」**，worker 直接发结果卡；缓存用 `defer` 交回插件线程，**先入队再发送**（否则「刚查完再问」会稳定多打一次外部接口）。
+- 补硬测试：`tests/test_playhub_loader.py`（16 例，60 s `(mtime,size)` 复核、坏行 10% 门槛、覆盖层回落）、`tests/test_playhub_scheduler.py` +17 例（`is_due_daily`/`is_due_weekly` 窗口、跨年周键、`_salary_days` 补发 ≤3 天与回拨）、`tests/test_playhub_executor.py`（19 例）、`tests/test_playhub_weather.py` +7 例异步路径（返回 `None`、worker 发卡、缓存落到下一条消息、队列满退化、无 `ctx.reply` 只记日志、库已关静默）。
+- 全量：`pytest -k "playhub or idiom_chain"` **635 passed / 570 subtests**，`main.py --check` 通过。真机冒烟单在 `docs/design/playhub-smoke.md`（29 条 + 开库 SQL + 故障对照表，版本自检期望已同步）。
+
 ### 人日汇总
 
 | 批次 | 内容 | 人日 |
@@ -2033,7 +2047,7 @@ def resolve_workspace(ctx, msg) -> Path:
 | 排行全表扫 | 视图无索引；`rank_period` 快照在 v1 不建 | 日/周/月榜走 `(room, day, uid)` 索引直查 `activity_daily`；总榜走 `v_rank_active` 聚合；金币榜走 `wallet_by_rank`。成员 >2000 且实测超时的群再评估引入快照（v2，见 §3.2.3） |
 | 题库加载 | 11 类目全量解析 | 懒加载 + 60 s stat 缓存 |
 | 定时动作拿不到锁 | `callback_lock(timeout=2)`（`plugins.py:304-336`） | 回调分页、单次 <200 ms；失败记日志不重试（框架本身也不重试，`docs/development/plugins.md:92`） |
-| 跨线程发送 | 发送路径有锁（`sdk.py:111-156`），但**跨线程调用的严格安全性未核实** | 设计双路径：直发 + `PendingOut` 兜底（§2.5） |
+| 跨线程发送 | 发送路径有锁（`sdk.py:111-156`），但**跨线程调用的严格安全性未核实** | 设计双路径：直发 + `PendingOut` 兜底（§2.5）；2026-11-06 已落 `adapters/executor.py`：发送走直发（与 `scheduler` 同模式），`Store` 写入走 `defer`→`flush` |
 
 ### 8.6 已知功能限制（需在帮助文案里对用户说明）
 
@@ -2045,7 +2059,7 @@ def resolve_workspace(ctx, msg) -> Path:
 6. **关键词触发天然无法"只对某群生效"**：群里发 `签到` 与日常用语同形，`bare_behavior`/强制参数能压住大部分误触，但**做不到零误触**；已知残留见 §4.3 的 9 个高危词。
 7. **两个看图猜成语插件共用 4 个裸词**（`提示`/`换一题`/`公布答案`/`退出猜成语`）：两边都有未结束对局时会被各回一次，跨插件状态不可见（§2.7 冲突 2/3）。—— 自 2026-11-05 起由 `wxbot_framework/game_slot.py` 的共享槽消除：一个群同时只允许一局，后开的一律被拒（见 §2.7 冲突 3）。
 8. **游戏槽只在本进程内存**：`wxbot_framework/game_slot.py` 的 `room → 占用者` 表随机器人重启清空、不跨进程。当前插件回调单线程串行，够用；将来若多进程分流，必须改成落盘或 IPC。
-9. **天气是回调里的同步 HTTP**（`adapters/outbound.QWeatherProvider`）：冷启动一次两跳（城市名 → LocationID、LocationID → 预报），最坏阻塞约 `2 × weather_timeout_seconds`（默认 ≤6 s）；同城市第二次起走进程内 LocationID 缓存，只一跳。彻底异步要先落 `adapters/executor.py`（设计 §2.5 要求，**至今未实现**，`adapters/` 只有 `__init__.py`/`memberfeed.py`/`outbound.py`）。在那之前：介意延迟就别配 key（保持离线）；配了也被 10 分钟缓存 + 5 分钟熔断兜住大部分请求。**另一个坑**：`urllib` 会读环境里的 `ALL_PROXY`/`HTTP_PROXY`，若指向一个不可用的代理，天气会一直「服务不可用」（开发机就是这个状态，2026-11-06 实测）；排查时先清代理再测。
+9. **天气已异步化，但仍有一处延迟是设计代价**（`adapters/outbound.QWeatherProvider` + `adapters/executor.py`，2026-11-06 落地）：两跳 HTTP（城市名 → LocationID、LocationID → 预报）跑在 worker，回调线程立刻返回、**不回「正在查」**，结果由 worker 直接发一张卡。三条残留：①**队列满或没有执行器时退化成同步**，那时最坏阻塞 `2 × weather_timeout_seconds`（默认 ≤6 s）——宁可慢也不丢查询；②**缓存落库延迟到下一条消息**（worker 不碰 `Store`，写缓存 `defer` → `App._flush()`），所以「刚查完立刻再问一次」可能还没命中缓存，多花一次额度；③**线程无法中断**，`timeout` 只记录超时警告，真正的超时来自 transport。**另外一个坑**：`urllib` 会读环境里的 `ALL_PROXY`/`HTTP_PROXY`，若指向一个不可用的代理，天气会一直「服务不可用」且 3 次后熔断 5 分钟（开发机就是这个状态，2026-11-06 实测）；排查时先清代理再测。
 10. **`聊天 开/关` 不存在**（2026-11-06 核实）：`plugins/mention_chat/plugin.json` 没有开关字段，`mention_chat/__init__.py:24-25` 只在启动读 `members.history_enabled`。要关只能停用插件；playhub 的 `聊天` 卡面已写明「那个通道归框架插件 mention_chat 管，本群没有开关」。
 
 ### 8.7 邀请人修复（C1：改框架五处）

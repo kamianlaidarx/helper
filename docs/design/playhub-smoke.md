@@ -12,9 +12,9 @@
 | # | 动作 | 通过标准 |
 |---|---|---|
 | 1 | 装 64 位 **Python 3.13** 与 Git | `python -V` 出 3.13.x；`git --version` 正常 |
-| 2 | `git clone https://github.com/kamianlaidarx/helper C:\helper-main` | `git log -1` 是 `d3ac847` 或更新 |
+| 2 | `git clone https://github.com/kamianlaidarx/helper C:\helper-main` | `git log -1` 是 `e230dfc` 或更新 |
 | 3 | `pip install -r requirements.txt` | 最后一行 `Successfully installed ...` |
-| 4 | `python -m pytest tests -q -k "playhub or idiom_chain"` | `609 passed` 上下、**0 failed**（这是版本自检，与微信无关） |
+| 4 | `python -m pytest tests -q -k "playhub or idiom_chain"` | `635 passed` 上下、**0 failed**（这是版本自检，与微信无关） |
 | 5 | `python main.py --check` | `配置与插件语法检查通过` |
 | 6 | `python tools/init_config.py` | 生成该机自己的 `bot_config.json`（**不要拷开发机的**，里面绑着开发机的 wxid） |
 | 7 | 云电脑微信登录**测试号**，进一个**只有你自己几个号的测试群** | 群里能看到机器人号在线 |
@@ -39,6 +39,8 @@
 **`weather_api_host` 必须填**：和风 2023 年起给每个账号一个专属域名（形如 `abc1234xyz.re.qweatherapi.com`），旧公共域名 `devapi.qweather.com` 用新 key 会返回 403/404（2026-11-06 实测过）。填了 `weather_api_host` 就不必再填 `weather_geo_host`——城市搜索与预报共用这一个域名。
 
 不填 key 也是合法状态：`天气 成都` 回「天气服务还没配置」，**不会编数据**。
+
+配了 key 时，`天气 成都` 的行为是**异步**的：机器人先不回话，1–3 秒后直接发一张天气卡（不会先回一句「正在查」）。这是设计选择——宁可安静几秒，也不刷两条消息。若那一刻后台队列已满（群里同时大量慢活），会退化成同步查询，最多多等 3–6 秒。
 
 ---
 
@@ -86,7 +88,7 @@
 | 21 | `切磋 @对方` → 对方 `同意` | 出胜负，金币不变 |
 | 22 | `点歌 晴天` | 报排位第 1，**不发音频**（本版没有音源） |
 | 22b | `聊天` | 只回说明卡：那个通道归框架插件 `mention_chat` 管，本群没有开关 |
-| 23 | `天气 成都` / `天气 火星` | 前者真实三天预报（若配了 key），后者明说查不到；**都不编** |
+| 23 | `天气 成都` / `天气 火星` | 前者真实三天预报（若配了 key；**1–3 秒后单独来一张卡**，不回「正在查」），后者明说查不到；**都不编**。紧接着再发一次 `天气 成都`，应立刻回同一张卡（命中缓存） |
 
 ### E. 群管（需 owner/admin）
 | # | 发 | 期望 |
@@ -164,6 +166,7 @@ WHERE w.balance <> (SELECT COALESCE(SUM(delta),0) FROM wallet_ledger l
 | `天气 成都` 立刻回"没配置" | `bot_config.json` 那一节是否在 `plugins` 下 | 层级写错，或 key 为空 |
 | 天气返回"暂时不可用" | 日志里的状态码 | 缺 `weather_api_host`（403/404）；连续 3 次失败会熔断 5 分钟 |
 | 天气「永远不可用」但 key 看着没问题 | 机器上是否设了 `ALL_PROXY` / `HTTP_PROXY` | `urllib` 会走系统代理；指向一个不可用代理时天气必然失败（开发机实测就是这样）。清掉代理再试 |
+| `天气 成都` 查完一次，紧接着再问**又等 1–3 秒** | —— | 已知设计代价：缓存由后台线程排队、在**下一条消息开头**才落库（worker 不碰数据库）。多花一次额度，不影响正确性 |
 | 回包发不出去 | 日志 `playhub 回包发送失败` | 账号被限制/网络；插件本身不会崩 |
 | 电脑重启后排行榜清零 | —— | 不会：数据在 SQLite；只有**进行中的对局**（猜题/接龙/切磋）在内存里，重启即丢 |
 

@@ -9,10 +9,12 @@ import gzip
 import json
 import pathlib
 import tempfile
+import threading
 import unittest
 import urllib.error
 from datetime import datetime
 
+from plugins.playhub.adapters.executor import Executor
 from plugins.playhub.adapters.outbound import (
     BREAKER_SECONDS,
     DEFAULT_HOST,
@@ -26,7 +28,7 @@ from plugins.playhub.adapters.outbound import (
 from plugins.playhub.app import App
 from plugins.playhub.core import Store
 from plugins.playhub.core.clock import CN
-from plugins.playhub.engines import build_engines
+from plugins.playhub.engines import GameRuntime, build_engines
 from plugins.playhub.engines.outbound import WEATHER_TTL, OutboundEngine
 
 ROOM = "12345678@chatroom"
@@ -382,6 +384,138 @@ class WeatherEngineTests(unittest.TestCase):
     def test_city_is_truncated(self) -> None:
         reply = self.say("天气 " + "成" * 30)
         self.assertIn("城市：" + "成" * 12, reply.text)
+
+
+class RecordingCtx(FakeCtx):
+    """带 `reply` 的 ctx：worker 线程直接发出去的卡记在这里。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+        self.sent_event = threading.Event()
+
+    def reply(self, msg, text: str) -> None:
+        self.sent.append(text)
+        self.sent_event.set()
+
+
+class BrokenProvider:
+    name = "broken"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def forecast(self, city: str):
+        self.calls += 1
+        raise RuntimeError("网络被拔了")
+
+
+class AsyncWeatherTests(unittest.TestCase):
+    """执行器接上以后的天气路径（§2.5 第 3、4 条）。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.store = Store(self.tmp / "playhub.sqlite3", account="acct")
+        self.store.migrate()
+        self.clock = FakeClock()
+        self.ctx = RecordingCtx()
+        self.stub = StubProvider()
+        self.executor = Executor(workers=2)
+        self.engine = OutboundEngine(
+            provider=self.stub, now_fn=self.clock, executor=self.executor
+        )
+        self.app = App(
+            store=self.store,
+            now_fn=self.clock,
+            repo_root=self.tmp,
+            engines={"outbound": self.engine},
+            executor=self.executor,
+        )
+
+    def tearDown(self) -> None:
+        self.executor.shutdown()
+        self.store.close()
+        self._tmp.cleanup()
+
+    def say(self, text: str):
+        return self.app.handle_message(self.ctx, FakeMsg(text))
+
+    def test_async_path_returns_none_and_worker_sends_the_card(self) -> None:
+        self.assertIsNone(self.say("天气 成都"), "异步路径不回「正在查」的第二条消息")
+        self.assertTrue(self.ctx.sent_event.wait(2.0))
+        self.assertEqual(len(self.ctx.sent), 1)
+        self.assertIn("城市：成都", self.ctx.sent[0])
+        self.assertEqual(self.stub.calls, ["成都"])
+
+    def test_worker_counts_show_up_in_stats(self) -> None:
+        self.say("天气 成都")
+        self.assertTrue(self.ctx.sent_event.wait(2.0))
+        stats = self.executor.stats()
+        self.assertEqual(stats["submitted"], 1)
+        self.assertEqual(stats["done"], 1)
+        self.assertEqual(stats["failed"], 0)
+
+    def test_cache_lands_on_the_next_message(self) -> None:
+        self.say("天气 成都")
+        self.assertTrue(self.ctx.sent_event.wait(2.0))
+        # worker 只把落库任务排队，真正写库是下一条消息开头的 flush()。
+        second = self.say("天气 成都")
+        self.assertIsNotNone(second, "缓存落库后应当命中，不该再排一次异步")
+        self.assertIn("城市：成都", second.text)
+        self.assertEqual(self.stub.calls, ["成都"])
+        self.assertGreaterEqual(self.executor.stats()["flushed"], 1)
+
+    def test_queue_full_falls_back_to_sync(self) -> None:
+        blocked = Executor(workers=1, queue_size=1)
+        self.addCleanup(blocked.shutdown)
+        gate = threading.Event()
+        started = threading.Event()
+        self.assertTrue(
+            blocked.submit(lambda: (started.set(), gate.wait(2.0)), label="blocker")
+        )
+        self.assertTrue(started.wait(2.0))
+
+        engine = OutboundEngine(provider=self.stub, now_fn=self.clock, executor=blocked)
+        app = App(
+            store=self.store,
+            now_fn=self.clock,
+            repo_root=self.tmp,
+            engines={"outbound": engine},
+            executor=blocked,
+        )
+        reply = app.handle_message(self.ctx, FakeMsg("天气 重庆"))
+        gate.set()
+        self.assertIsNotNone(reply, "队列满时退化成同步，不能丢查询")
+        self.assertIn("城市：重庆", reply.text)
+
+    def test_worker_without_reply_only_logs(self) -> None:
+        game = GameRuntime(store=self.store)
+        with self.assertLogs("playhub.outbound", level="WARNING") as logs:
+            self.engine._answer_later(                       # noqa: SLF001
+                FakeMsg("天气 成都"), FakeCtx(), game, ROOM, "成都", NAME_A
+            )
+        self.assertIn("ctx.reply 不可用", "\n".join(logs.output))
+        self.assertGreaterEqual(self.executor.stats()["deferred"], 1)
+
+    def test_provider_exception_renders_the_offline_card(self) -> None:
+        broken = BrokenProvider()
+        app = App(
+            store=self.store,
+            now_fn=self.clock,
+            repo_root=self.tmp,
+            engines={"outbound": OutboundEngine(provider=broken, now_fn=self.clock)},
+        )
+        with self.assertLogs("playhub.outbound", level="ERROR"):
+            reply = app.handle_message(self.ctx, FakeMsg("天气 成都"))
+        self.assertIn("天气服务还没配置", reply.text)
+        self.assertEqual(broken.calls, 1)
+
+    def test_cache_write_is_silent_when_store_is_closed(self) -> None:
+        weather = Weather(city="成都", days=("今天 多云",), source="stub")
+        self.store.close()
+        with self.assertLogs("playhub.outbound", level="WARNING"):
+            self.engine._remember_cached(self.store, ROOM, "成都", weather)   # noqa: SLF001
 
 
 if __name__ == "__main__":       # pragma: no cover

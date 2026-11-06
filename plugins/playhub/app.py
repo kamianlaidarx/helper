@@ -96,13 +96,15 @@ class App:
     """
 
     def __init__(self, *, store=None, rng=None, now_fn=None, repo_root=None, engines=None,
-                 logger=None, config=None):
+                 logger=None, config=None, executor=None):
         self._store = store
         self._game = GameRuntime(store=store)
+        self._executor = executor
         self._engines = (
             engines
             if engines is not None
-            else build_engines(rng=rng, now_fn=now_fn, repo_root=repo_root, config=config)
+            else build_engines(rng=rng, now_fn=now_fn, repo_root=repo_root, config=config,
+                               executor=executor)
         )
         self._log = logger if logger is not None else logging.getLogger("playhub.app")
         self._now = now_fn if now_fn is not None else clock.now_ts
@@ -111,6 +113,9 @@ class App:
     def handle_message(self, ctx, msg) -> Reply | None:
         if msg is None:
             return None
+        # 后台 worker 交回来的落库任务只能在这里做：回调线程是唯一被允许碰 Store 的
+        # 线程（§2.5 第 4 条）。放在最前面，让它随下一条消息尽快落盘。
+        self._flush()
         # I1 第一道闸：机器人自己发的消息根本不进插件（§2.6.5）。
         if getattr(msg, "is_self", False):
             return None
@@ -354,6 +359,21 @@ class App:
                 )
         except Exception:
             self._log.debug("活跃计数失败：room=%s uid=%s", room, uid, exc_info=True)
+
+    # -- 后台任务的落库（§2.5 第 4 条）---------------------------------------
+    def _flush(self) -> None:
+        """执行后台 worker 交回来的落库任务；失败只记日志。
+
+        为什么要绕这一圈：前台 `Store` 只有一条 SQLite 连接，worker 线程直接写会和
+        回调线程的事务互相踩（`core/store.py:34-41`）。所以 worker 只算不写，
+        由这里统一落盘。
+        """
+        if self._executor is None:
+            return
+        try:
+            self._executor.flush()
+        except Exception:
+            self._log.warning("延迟落库执行失败", exc_info=True)
 
     # -- 功能开关（kv: feature.<engine>）-------------------------------------
     def _feature_off(self, engine: str, msg) -> bool:
