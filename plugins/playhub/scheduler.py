@@ -26,7 +26,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .core import activity, clock, items, kv, render, switches
-from .core.errors import DuplicatePosting, Insufficient
+from .core.errors import DuplicatePosting, Insufficient, WalletError
 from .core.store import Store
 from .core.wallet import credit, debit, ensure_player
 from .engines import moderation, ranking
@@ -43,6 +43,10 @@ from .engines.quiz import QuizEngine
 from .engines.social import KIND_EMPLOY, WAGE_PER_DAY, SocialEngine, _audit, _meta, _partner_of
 
 _LOG = logging.getLogger("playhub.scheduler")
+
+
+class _ChestAlreadySent(Exception):
+    """本周银箱已经发过（`idem` 主键撞车）。只用来区分「已发」和真正的约束错误。"""
 
 #: 线程名：`§4.2.7` 要求日志里能一眼认出是后台线程
 THREAD_NAME = "playhub.scheduler"
@@ -174,8 +178,10 @@ def _audit_tx(store, *, now: int, room: str | None, action: str, result: str = "
 
 def _account_of(ctx) -> str:
     """`ctx.members.account`；拿不到（空/非字符串/能力异常）返回空串。"""
-    members = getattr(ctx, "members", None)
     try:
+        # `CapabilityError` 继承 `NotImplementedError` 而不是 `AttributeError`，
+        # `getattr(ctx, "members", None)` 的默认值接不住它（`§4.2.3`）。
+        members = getattr(ctx, "members", None)
         account = getattr(members, "account", "") or ""
     except Exception:                       # CapabilityError 等：失败关闭
         return ""
@@ -246,7 +252,9 @@ def run_rename(store, ctx, room: str, now: int, *, send, logger=None) -> int:
         # 首次巡检（没有基线）diff 必为空：只建基线、不播报（`§4.2.4`）
         for uid, old, new in changes:
             activity.record_nickname_change(conn, room=room, uid=uid, old=old, new=new, now=now)
-        kv.set_json(conn, room, RENAME_SNAPSHOT_KEY, snapshot_of(rows), now)
+        # 空列表当基线会把快照清空，下一轮全员都算「新人」→ 漏报一轮（I5）。
+        if rows:
+            kv.set_json(conn, room, RENAME_SNAPSHOT_KEY, snapshot_of(rows), now)
         kv.put(conn, room, SCHED_LAST_RENAME, today, now)
         if allowed:
             _audit(conn, now=now, room=room, actor="scheduler", action="sched:rename",
@@ -257,7 +265,12 @@ def run_rename(store, ctx, room: str, now: int, *, send, logger=None) -> int:
 
     if changes and allowed:
         try:
-            send(room, _rename_text(changes))
+            ok = send(room, _rename_text(changes))
+            if ok is False:                 # 发送失败（含线程已停）：记 failed，不重试
+                log.warning("playhub 改名播报未送出：room=%s", room)
+                _audit_tx(store, now=now, room=room, action="sched:rename",
+                          result="failed", detail={"error": "send_false"})
+                return len(changes)
         except Exception as error:
             # 发送失败不重试：快照已更新，重试只会把同一处改名报两遍（`§4.2.4`）
             log.warning("playhub 改名播报发送失败：room=%s error=%s", room, type(error).__name__)
@@ -287,13 +300,20 @@ def run_quiz_gc(store, quiz, now: int) -> int:
         return quiz.sweep(conn, now, release_slots=False)
 
 
-def _purge_idem(store, cutoff: int) -> int:
+def _stopped_of(stopped) -> bool:
+    """`stopped` 可以是 Event（`Scheduler._stopped`）或 None；为真表示该收手了。"""
+    return bool(stopped is not None and stopped.is_set())
+
+
+def _purge_idem(store, cutoff: int, *, stopped=None) -> int:
     """分批删过期 idem；每批一个事务，避免一次锁太久。
 
     `idem` 是 `WITHOUT ROWID`，没有 `rowid` 列，只能按主键 `key` 删。
     """
     total = 0
     while True:
+        if _stopped_of(stopped):            # 卸载中：剩下的过期行留给下一次启动
+            return total
         with store.tx() as conn:
             cursor = conn.execute(
                 "DELETE FROM idem WHERE key IN (SELECT key FROM idem WHERE at < ? LIMIT ?)",
@@ -305,10 +325,12 @@ def _purge_idem(store, cutoff: int) -> int:
             return total
 
 
-def _purge_audit(store, cutoff: int) -> int:
+def _purge_audit(store, cutoff: int, *, stopped=None) -> int:
     """分批删过期 audit（`audit` 有自增 id，按 id 删）。`wallet_ledger` 永不删。"""
     total = 0
     while True:
+        if _stopped_of(stopped):
+            return total
         with store.tx() as conn:
             cursor = conn.execute(
                 "DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE at < ? LIMIT ?)",
@@ -320,7 +342,7 @@ def _purge_audit(store, cutoff: int) -> int:
             return total
 
 
-def run_purge(store, now: int) -> tuple[int, int]:
+def run_purge(store, now: int, *, stopped=None) -> tuple[int, int]:
     """每天 04:00 后清一次过期 idem/audit；返回 `(idem, audit)` 条数。"""
     today = clock.day_of(now)
     local = _local(now)
@@ -329,8 +351,8 @@ def run_purge(store, now: int) -> tuple[int, int]:
     if not is_due_daily(last, today, (local.hour, local.minute), GC_AFTER):
         return 0, 0
 
-    idem_count = _purge_idem(store, now - IDEM_RETENTION_DAYS * 86400)
-    audit_count = _purge_audit(store, now - AUDIT_RETENTION_DAYS * 86400)
+    idem_count = _purge_idem(store, now - IDEM_RETENTION_DAYS * 86400, stopped=stopped)
+    audit_count = _purge_audit(store, now - AUDIT_RETENTION_DAYS * 86400, stopped=stopped)
     with store.tx() as conn:
         kv.put(conn, GLOBAL_ROOM, SCHED_LAST_PURGE, today, now)
         _audit(conn, now=now, room=None, actor="scheduler", action="sched:gc",
@@ -379,7 +401,10 @@ def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
         pair_id = int(row["id"])
         employer = str(row["by_uid"] or "")
         employee = _partner_of(row, employer) if employer else ""
-        if not employer or not employee or employer == employee:
+        # `_partner_of` 是「不等于 low 就返回 low」，所以 by_uid 是局外人时它会
+        # 给出一个看着合法的人选，把局外人的钱扣走。必须显式校验（`§4.2.4` ④）。
+        members = (str(row["low_uid"] or ""), str(row["high_uid"] or ""))
+        if not employer or not employee or employer == employee or employer not in members:
             _audit_tx(store, now=now, room=room, action="sched:salary", result="failed",
                       target=str(pair_id), detail={"why": "bad_by_uid", "pair_id": pair_id})
             continue
@@ -393,6 +418,12 @@ def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
             operation_key = f"{keys}:{due_day}"
             try:
                 with store.tx() as conn:
+                    # 读到合同到付款之间可能刚被解雇：事务内按主键复查一次（`§4.2.4` ④）
+                    still = conn.execute(
+                        "SELECT 1 FROM pair WHERE id = ? AND state = 'active'", (pair_id,)
+                    ).fetchone()
+                    if still is None:
+                        break               # 已解除：这一天及之后的都不再发
                     ensure_player(conn, room=room, uid=employer, nickname="", now=now)
                     ensure_player(conn, room=room, uid=employee, nickname="", now=now)
                     # 两笔分录同一个 operation_key、posting_no 0/1：任一笔重复，整对回滚
@@ -413,6 +444,11 @@ def run_salary(store, room: str, day: str, now: int) -> tuple[int, int]:
                 skipped += 1
                 _audit_tx(store, now=now, room=room, action="sched:salary", result="failed",
                           target=str(pair_id), detail={"why": "insufficient", "day": due_day})
+            except WalletError:
+                # 余额溢出等：整笔已回滚。记一笔、跳过这一天，别把整群后续合同也带走。
+                skipped += 1
+                _audit_tx(store, now=now, room=room, action="sched:salary", result="failed",
+                          target=str(pair_id), detail={"why": "wallet_error", "day": due_day})
     return paid, skipped
 
 
@@ -452,9 +488,13 @@ def run_chest(store, room: str, week: str, now: int, *, account: str = "") -> in
     key = f"sched:chest:{room}:{week}"
     try:
         with store.tx() as conn:
-            conn.execute(
-                "INSERT INTO idem (key, scope, at) VALUES (?, 'sched.chest', ?)", (key, now)
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO idem (key, scope, at) VALUES (?, 'sched.chest', ?)", (key, now)
+                )
+            except sqlite3.IntegrityError:
+                # 只有这一步撞主键才等于「这一周已经发过」；下游的约束错误得照抛
+                raise _ChestAlreadySent from None
             rows = ranking.top(conn, board=ranking.ACTIVITY_BOARD, room=room,
                                period="week", now=last_sunday, limit=CHEST_SCAN_LIMIT)
             winners = [
@@ -464,14 +504,15 @@ def run_chest(store, room: str, week: str, now: int, *, account: str = "") -> in
             for uid in winners:
                 ensure_player(conn, room=room, uid=uid, nickname="", now=now)
                 items.add(conn, room, uid, items.CHEST_SILVER, 1)
-            kv.put(conn, room, SCHED_LAST_CHEST, week, now)
+            # 写**本周**键：到期判断比的是 `clock.week_of(now)`，写上周键永远判不出「已发」
+            kv.put(conn, room, SCHED_LAST_CHEST, clock.week_of(now), now)
             _audit(conn, now=now, room=room, actor="scheduler", action="sched:chest",
                    detail={"week": week, "uids": winners})
         return len(winners)
-    except sqlite3.IntegrityError:
+    except _ChestAlreadySent:
         # 本周已发过（idem 主键撞车）：把 last_run 补上，别再每 tick 重查一遍
         with store.tx() as conn:
-            kv.put(conn, room, SCHED_LAST_CHEST, week, now)
+            kv.put(conn, room, SCHED_LAST_CHEST, clock.week_of(now), now)
         return 0
 
 
@@ -599,6 +640,8 @@ class Scheduler:
             counts["quiz_closed"] += result
 
         for room in self._rooms(store, EXPIRE_ROOMS_SQL):
+            if self._stopped.is_set():      # 卸载中：剩下的群留给下一次启动（`§4.2.7`）
+                return
             result = self._guard(
                 "expire", room, lambda room=room: run_expire(store, self._social, room, now), counts
             )
@@ -606,6 +649,8 @@ class Scheduler:
                 counts["expired"] += result
 
         for room in self._rooms(store, SALARY_ROOMS_SQL, (KIND_EMPLOY,)):
+            if self._stopped.is_set():
+                return
             result = self._guard(
                 "salary", room, lambda room=room: self._salary_room(store, room, day, hm, now), counts
             )
@@ -615,6 +660,8 @@ class Scheduler:
 
         week, since_day, until_day = _last_week(now)
         for room in self._rooms(store, CHEST_ROOMS_SQL, (since_day, until_day)):
+            if self._stopped.is_set():
+                return
             result = self._guard(
                 "chest",
                 room,
@@ -626,12 +673,16 @@ class Scheduler:
             if isinstance(result, int):
                 counts["chests"] += result
 
-        result = self._guard("purge", GLOBAL_ROOM, lambda: run_purge(store, now), counts)
+        result = self._guard(
+            "purge", GLOBAL_ROOM, lambda: run_purge(store, now, stopped=self._stopped), counts
+        )
         if isinstance(result, tuple):
             counts["idem_purged"], counts["audit_purged"] = result
 
         since_day = clock.day_of(now - ACTIVE_ROOM_DAYS * 86400)
         for room in self._rooms(store, RENAME_ROOMS_SQL, (since_day,)):
+            if self._stopped.is_set():
+                return
             result = self._guard(
                 "rename",
                 room,
@@ -721,9 +772,15 @@ class Scheduler:
             counts["errors"] += 1
             return _FAILED
 
-    def _send(self, room: str, text: str) -> None:
-        """唯一的主动发群出口；异常交给 `run_rename` 记 audit（`§4.2.4`）。"""
+    def _send(self, room: str, text: str) -> bool:
+        """唯一的主动发群出口；异常交给 `run_rename` 记 audit（`§4.2.4`）。
+
+        卸载已经开始的 tick 不再往群里发东西：返回 `False`，由调用方记 `failed`。
+        """
+        if self._stopped.is_set():
+            return False
         self._ctx.send_text(room, text)
+        return True
 
     def _warn_no_account(self) -> None:
         if self._warned_no_account:

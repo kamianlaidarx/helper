@@ -1404,7 +1404,7 @@ def is_due_weekly(last: str | None, this_week: str, local_wd_hm: tuple[int, int,
 - 到期：`clock.week_of(now)`（`core/clock.py:36`）≠ `kv(room, 'sched.last.chest')`，且（今天不是周一，或本地时间 ≥ 00:10）。只发**上一周**；停机跨过整周的话，更早那周不补（周榜奖励时效性强，补发没有意义）。
 - 上周区间：取 `last_sunday_ts = now - (本地 weekday + 1) * 86400`，调 `ranking.top(conn, board="activity", room=room, period="week", now=last_sunday_ts, limit=20)`（`engines/ranking.py:86`）；`top` 内部走 `clock.range_of("week", now)`（`ranking.py:142`、`clock.py:55-56`），对上周日的时间戳正好得到「上周一 ~ 上周日」。周键 `week = clock.week_of(last_sunday_ts)`。
 - 过滤：去掉 `moderation.is_blocked(conn, room, uid)` 为真的人与机器人自己，再取前 10；不往后递补以外的规则，空榜什么也不发。
-- 一个群一个事务：`INSERT INTO idem (key, scope, at) VALUES (?, 'sched.chest', ?)`，`key = f"sched:chest:{room}:{week}"`（**不**用 `OR IGNORE`；撞主键 `IntegrityError` = 这周已发 → 回滚并写 last_run）→ 每人 `ensure_player` + `items.add(conn, room, uid, items.CHEST_SILVER, 1)`（`core/items.py:79`、`:192`）→ `kv(room, 'sched.last.chest') = week` → `audit(action='sched:chest', detail={"week": week, "uids": [...]})`。10 人要么全发要么全不发。
+- 一个群一个事务：`INSERT INTO idem (key, scope, at) VALUES (?, 'sched.chest', ?)`，`key = f"sched:chest:{room}:{week}"`（**不**用 `OR IGNORE`；撞主键 `IntegrityError` = 这周已发 → 回滚并写 last_run）→ 每人 `ensure_player` + `items.add(conn, room, uid, items.CHEST_SILVER, 1)`（`core/items.py:79`、`:192`）→ `kv(room, 'sched.last.chest') = clock.week_of(now)`（**本周**键，与下行的到期判断同一口径；不是要发的那个 `week`，否则永远判不出「本周已发」）→ `audit(action='sched:chest', detail={"week": week, "uids": [...]})`。10 人要么全发要么全不发。
 - 不在群里播报（定案）。获奖者开背包或 `开宝箱` 时自然看到。
 
 #### 4.2.5 幂等键汇总（问题 D）
@@ -1416,7 +1416,7 @@ def is_due_weekly(last: str | None, this_week: str, local_wd_hm: tuple[int, int,
 | 收题 | `closed_at IS NULL` 条件更新 | 无 |
 | 清理 | `DELETE ... WHERE at < ?` 天然幂等 | `kv('*','sched.last.purge')=YYYY-MM-DD` |
 | 工资 | `sched:salary:<pair_id>:<YYYY-MM-DD>`，posting 0 = 雇主扣、1 = 员工收 | `kv(room,'sched.last.salary')=YYYY-MM-DD` |
-| 银箱 | `idem.key = sched:chest:<room>:<YYYY-Www>`，与发箱同事务 | `kv(room,'sched.last.chest')=YYYY-Www` |
+| 银箱 | `idem.key = sched:chest:<room>:<YYYY-Www>`，与发箱同事务 | `kv(room,'sched.last.chest')=YYYY-Www`（写入的是**本周**键） |
 
 `idem` 30 天保留期 ≥ 银箱键需要的 7 天，清理不会让一周内的重发变得可能。
 

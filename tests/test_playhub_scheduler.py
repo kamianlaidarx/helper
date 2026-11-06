@@ -21,6 +21,7 @@ from unittest import mock
 
 from plugins.playhub import db_path_for
 from plugins.playhub.core import Store, balance, credit, ensure_player
+from plugins.playhub.core.wallet import MAX_BALANCE
 from plugins.playhub.core import activity, clock, items, kv
 from plugins.playhub.core.clock import CN
 from plugins.playhub.engines.social import SocialEngine
@@ -31,6 +32,7 @@ from plugins.playhub.scheduler import (
     SCHED_LAST_RENAME,
     Scheduler,
     TickReport,
+    run_rename,
 )
 from wxbot_framework import game_slot
 
@@ -338,6 +340,25 @@ class RenameTest(SchedulerBase):
         self.assertEqual(self.tick(now=ts("2026-11-05 10:30")).renamed, 0)
         self.assertEqual(self.nickname_log(), [])
 
+    def test_stopped_scheduler_does_not_send(self):
+        # 卸载已经开始的 tick：剩下的群不再处理，更不能往群里发播报（§4.2.7 W4）
+        self.tick()
+        self.ctx.rows = members((UID_A, "新名字"), (UID_B, "小B"))
+        self.sched._stopped.set()
+        self.sched.tick(ts("2026-11-05 10:30"))
+        self.assertEqual(self.ctx.sent, [])
+        self.assertEqual(self.nickname_log(), [])
+
+    def test_send_returning_false_is_marked_failed(self):
+        self.tick()
+        self.ctx.rows = members((UID_A, "新名字"), (UID_B, "小B"))
+        found = run_rename(self.store, self.ctx, ROOM, ts("2026-11-05 10:30"),
+                           send=lambda room, text: False, logger=self.log)
+        self.assertEqual(found, 1)
+        failed = [a for a in self.audits("sched:rename") if a["result"] == "failed"]
+        self.assertEqual([a["detail"] for a in failed], [{"error": "send_false"}])
+        self.assertEqual(self.snapshot()[UID_A], "新名字")         # 快照照旧更新
+
     def test_bot_itself_is_not_reported(self):
         self.ctx.rows = members((UID_A, "旧名字"), (ACCOUNT, "机器人"))
         self.tick()
@@ -586,6 +607,42 @@ class SalaryTest(SchedulerBase):
         self.assertEqual(failed[0]["detail"]["why"], "bad_by_uid")
 
 
+    def test_by_uid_outside_the_pair_pays_nobody(self):
+        # 手改库/迁移出错时 by_uid 可能是局外人：`_partner_of` 会「不等于 low 就返回 low」，
+        # 不校验就会扣局外人的钱打给 low_uid（W3）
+        self.ensure(UID_A, coins=100)
+        self.ensure(UID_B, coins=100)
+        self.ensure(UID_C, coins=100)
+        self.add_pair(kind="employ", low=UID_A, high=UID_B, by=UID_C, since=ts("2026-11-03 12:00"))
+        report = self.tick()
+        self.assertEqual(report.salary_paid, 0)
+        self.assertEqual((self.coins(UID_A), self.coins(UID_B), self.coins(UID_C)), (100, 100, 100))
+        failed = [a for a in self.audits("sched:salary") if a["result"] == "failed"]
+        self.assertEqual([a["detail"]["why"] for a in failed], ["bad_by_uid"])
+
+    def test_employee_overflow_is_skipped_and_other_pairs_still_paid(self):
+        # 员工余额溢出：整笔回滚、记一笔、continue；不能把同群后面的合同一起带走（W2）
+        self.ensure(UID_A, coins=100)
+        self.ensure(UID_B)
+        self.ensure(UID_C, coins=100)
+        self.ensure("wxid_d")
+        with self.store.tx() as conn:
+            conn.execute(
+                "UPDATE wallet SET balance = ? WHERE room = ? AND uid = ? AND currency = 'coin'",
+                (MAX_BALANCE - 5, ROOM, UID_B),
+            )
+        self.employ(since="2026-11-03")
+        self.add_pair(kind="employ", low=UID_C, high="wxid_d", by=UID_C, since=ts("2026-11-03 12:00"))
+        report = self.tick()
+        self.assertEqual((report.salary_paid, report.salary_skipped), (1, 1))
+        self.assertEqual(self.coins(UID_A), 100)                  # 整笔回滚，雇主没被扣
+        self.assertEqual(self.coins(UID_B), MAX_BALANCE - 5)
+        self.assertEqual(self.coins("wxid_d"), 20)                # 同群的另一份合同照发
+        why = [a["detail"].get("why") for a in self.audits("sched:salary")
+               if a["result"] == "failed"]
+        self.assertEqual(why, ["wallet_error"])
+
+
 # ---------------------------------------------------------------------------
 # 动作五：周榜银箱
 # ---------------------------------------------------------------------------
@@ -610,8 +667,21 @@ class ChestTest(SchedulerBase):
         self.assertEqual(self.silver("wxid_top11"), 1)
         self.assertEqual(self.silver("wxid_top02"), 1)
         self.assertEqual(self.silver("wxid_top01"), 0)
-        self.assertEqual(self.kv(SCHED_LAST_CHEST), "2026-W44")
+        # last_run 存的是**本周**键（到期判断比的也是它），要发的那个周在 idem 键里
+        self.assertEqual(self.kv(SCHED_LAST_CHEST), "2026-W45")
         self.assertIn(f"sched:chest:{ROOM}:2026-W44", self.idem_keys())
+
+    def test_second_tick_in_the_same_week_does_not_touch_the_idem_table(self):
+        self.tick()
+        keys = self.idem_keys()
+        with mock.patch.object(kv, "put", wraps=kv.put) as put:
+            self.assertEqual(self.tick().chests, 0)
+        self.assertEqual(self.idem_keys(), keys)                  # 没有再撞主键重写
+        self.assertFalse(
+            [c for c in put.call_args_list if c.args[2] == SCHED_LAST_CHEST],
+            "本周已经发过：tick 不该再回写 sched.last.chest",
+        )
+        self.assertEqual(self.kv(SCHED_LAST_CHEST), "2026-W45")
 
     def test_this_week_activity_is_not_counted(self):
         self.say_activity(UID_C, "2026-11-03", n=50)              # 本周二
@@ -645,7 +715,7 @@ class ChestTest(SchedulerBase):
             self.say_activity(f"wxid_top{index:02d}", "2026-11-15", n=index + 1)
         report = self.tick(now=ts("2026-11-18 10:30"))            # 两周后的周三
         self.assertEqual(report.chests, 10)                       # 只发最近一周
-        self.assertEqual(self.kv(SCHED_LAST_CHEST), "2026-W46")
+        self.assertEqual(self.kv(SCHED_LAST_CHEST), "2026-W47")
         self.assertEqual(len([k for k in self.idem_keys() if k.startswith("sched:chest")]), 1)
 
 
