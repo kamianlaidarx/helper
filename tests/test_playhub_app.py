@@ -470,26 +470,37 @@ class InvariantI1Test(StoreCase):
 # 帮助
 # ---------------------------------------------------------------------------
 class HelpTextTest(unittest.TestCase):
-    """§4.5 / §7：帮助是一张总览卡，列全部分组，并保留一行已知限制说明。"""
+    """§4.5 / §7：帮助是菜单网格，列全部主关键词，并保留一行已知限制说明。"""
 
     def test_lists_current_features(self):
         text = help_text()
         self.assertEqual(text, HELP_TEXT)
-        for word in ("签到", "抽签", "排行榜", "猜成语", "找茬", "问答",
-                     "提示", "公布答案", "换一题", "结束"):
+        # 每个**主关键词**都必须有格子：别名单列会更长，所以只查主词（44 个）。
+        primary = {}
+        for trigger in TRIGGERS:
+            if trigger.action not in primary:
+                primary[trigger.action] = trigger.keyword
+        for keyword in primary.values():
+            with self.subTest(keyword=keyword):
+                self.assertIn(keyword, text)
+        for word in ("默认关闭", "已知限制"):
             self.assertIn(word, text)
-        # 第 3 批的关系玩法必须出现在总览里，并标明默认关闭——藏起来等于让用户猜
-        for word in ("结婚", "闺蜜", "结拜", "雇佣", "纳妾", "默认关闭"):
-            self.assertIn(word, text)
+
+    def test_menu_is_a_grid(self):
+        # 用户 2026-11-06 指定的形状：`=====🤖 菜单 🤖=====` + 三列网格。
+        text = help_text()
+        self.assertTrue(text.startswith("=====🤖 菜单 🤖====="), text)
+        body = text.splitlines()[1:-3]
+        self.assertTrue(body, text)
+        for line in body:
+            # 网格行至少含两个分隔空格（最后一行可能不满三格）。
+            self.assertIn(" ", line.strip(), line)
 
     def test_fits_in_one_message(self):
         # `wxbot_framework/sdk.py:123`：超过 1023 字节会分段发送，群里就是刷屏。
-        # 帮助必须是**一条**消息，所以按字节卡死，并顺手限制行数（一屏能看完）。
+        # 菜单必须是**一条**消息，所以按字节卡死。
         text = help_text()
         self.assertLessEqual(len(text.encode("utf-8")), HELP_MAX_BYTES, text)
-        self.assertLessEqual(len(text.splitlines()), 10, text)
-        # 不分段也意味着不能有装饰头/分隔线——手机上那两行看起来像乱码。
-        self.assertFalse(text.startswith("====="), text)
         self.assertNotIn("════", text)
 
     def test_keeps_known_limitation(self):
