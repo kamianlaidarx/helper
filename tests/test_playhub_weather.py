@@ -5,6 +5,7 @@ JSON。引擎侧用 `StubProvider`，验证 10 分钟缓存与「离线不编数
 """
 from __future__ import annotations
 
+import gzip
 import json
 import pathlib
 import tempfile
@@ -195,6 +196,34 @@ class BreakerTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 7)
 
 
+class TransportDecodingTests(unittest.TestCase):
+    """和风的专属 API Host 会无视 `Accept-Encoding: identity` 直接回 gzip（实测）。"""
+
+    def test_plain_body_passes_through(self) -> None:
+        from plugins.playhub.adapters.outbound import _maybe_gunzip
+
+        raw = dump(GEO_OK)
+        self.assertEqual(_maybe_gunzip(raw), raw)
+
+    def test_gzip_body_is_decompressed(self) -> None:
+        from plugins.playhub.adapters.outbound import _maybe_gunzip
+
+        raw = gzip.compress(dump(GEO_OK))
+        self.assertEqual(_maybe_gunzip(raw), dump(GEO_OK))
+        self.assertEqual(json.loads(_maybe_gunzip(raw).decode("utf-8"))["code"], "200")
+
+    def test_broken_gzip_returns_none(self) -> None:
+        from plugins.playhub.adapters.outbound import _maybe_gunzip
+
+        self.assertIsNone(_maybe_gunzip(b"\x1f\x8b\x08\x00truncated"))
+
+    def test_oversize_after_decompression_returns_none(self) -> None:
+        from plugins.playhub.adapters.outbound import _maybe_gunzip
+
+        bomb = gzip.compress(b" " * (MAX_RESPONSE_BYTES + 1024))
+        self.assertIsNone(_maybe_gunzip(bomb), "解压后超限也要拒，防 gzip 炸弹")
+
+
 class BuildProviderTests(unittest.TestCase):
     def test_defaults_to_offline(self) -> None:
         for config in (None, {}, {"weather_provider": "qweather"},
@@ -220,6 +249,27 @@ class BuildProviderTests(unittest.TestCase):
                                  "weather_timeout_seconds": 0})
         assert isinstance(client, QWeatherProvider)
         self.assertEqual(client._timeout, QWeatherProvider("k")._timeout)   # noqa: SLF001
+
+    def test_single_api_host_covers_both_hops(self) -> None:
+        """新方案（2023+）一个专属 API Host 同时服务 geo 与 weather，只填一个就够。"""
+        client = build_provider({
+            "weather_provider": "qweather",
+            "weather_api_key": "k",
+            "weather_api_host": "abc123.re.qweatherapi.com",
+        })
+        assert isinstance(client, QWeatherProvider)
+        self.assertEqual(client._host, "abc123.re.qweatherapi.com")        # noqa: SLF001
+        self.assertEqual(client._geo_host, "abc123.re.qweatherapi.com")    # noqa: SLF001
+
+    def test_geo_host_override_wins(self) -> None:
+        client = build_provider({
+            "weather_provider": "qweather",
+            "weather_api_key": "k",
+            "weather_api_host": "abc123.re.qweatherapi.com",
+            "weather_geo_host": "geo.example.com",
+        })
+        assert isinstance(client, QWeatherProvider)
+        self.assertEqual(client._geo_host, "geo.example.com")              # noqa: SLF001
 
     def test_build_engines_uses_config(self) -> None:
         engines = build_engines(config={"weather_provider": "qweather", "weather_api_key": "k"})

@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+import gzip
 import json
 import time
 import urllib.parse
@@ -44,6 +45,7 @@ TIMEOUT_MAX = 10.0
 MAX_RESPONSE_BYTES = 64 * 1024
 DAY_LABELS = ("今天", "明天", "后天")
 USER_AGENT = "helper-playhub/1.0"
+GZIP_MAGIC = b"\x1f\x8b"
 #: 熔断（设计 §8.4）：连续 3 次失败停 5 分钟，免得对端挂了还每句话都去撞一次。
 FAIL_THRESHOLD = 3
 BREAKER_SECONDS = 300.0
@@ -236,13 +238,36 @@ class QWeatherProvider:
 def _urlopen(url: str, timeout: float) -> bytes | None:
     """默认传输：一次 GET，只收 200，读满上限就放弃。异常交给调用方吞。"""
     request = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            # 明确要 identity，省得每跳都解压；对端不听话时 `_maybe_gunzip` 兜底。
+            "Accept-Encoding": "identity",
+        },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:   # noqa: S310 - 固定 https
         if getattr(response, "status", 200) != 200:
             return None
         data = response.read(MAX_RESPONSE_BYTES + 1)
-    return data if len(data) <= MAX_RESPONSE_BYTES else None
+    if len(data) > MAX_RESPONSE_BYTES:
+        return None
+    return _maybe_gunzip(data)
+
+
+def _maybe_gunzip(data: bytes) -> bytes | None:
+    """对端可能无视 `Accept-Encoding: identity` 直接回 gzip。
+
+    2026-11-06 实测：和风天气的专属 API Host 就是这么干的，不解压会让 JSON 解析
+    永远失败——症状是「key 明明是对的，天气永远不可用」。
+    """
+    if not data.startswith(GZIP_MAGIC):
+        return data
+    try:
+        plain = gzip.decompress(data)
+    except (OSError, EOFError):
+        return None
+    return plain if len(plain) <= MAX_RESPONSE_BYTES else None
 
 
 DEFAULT_PROVIDER: WeatherProvider = OfflineProvider()
@@ -261,6 +286,9 @@ def build_provider(config: Mapping[str, object] | None = None) -> WeatherProvide
     if not isinstance(key, str) or not key.strip():
         return DEFAULT_PROVIDER
     host = str(options.get("weather_api_host") or DEFAULT_HOST)
-    geo_host = str(options.get("weather_geo_host") or GEO_HOST)
+    # 2023 起和风给每个账号一个专属 API Host，一个域名同时服务 geo 与 weather；
+    # 只填了 `weather_api_host` 时让 geo 也走它，省得两处写同一个值写漏一处。
+    geo_override = options.get("weather_geo_host")
+    geo_host = str(geo_override) if geo_override else (host if options.get("weather_api_host") else GEO_HOST)
     timeout = QWeatherProvider._clean_timeout(options.get("weather_timeout_seconds", DEFAULT_TIMEOUT))
     return QWeatherProvider(key, host=host, geo_host=geo_host, timeout=timeout)
