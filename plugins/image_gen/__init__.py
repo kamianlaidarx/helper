@@ -34,7 +34,7 @@ class Plugin:
             raise ValueError('image_gen.image_config_file 应为仓库根目录下的文件名')
         self.config_file = config_file
         self.cooldown = _number(options.get('cooldown_seconds', 20), 'cooldown_seconds', 0, 300)
-        self.max_prompt = _number(options.get('max_prompt_length', 300), 'max_prompt_length', 1, 800)
+        self.max_prompt = _number(options.get('max_prompt_length', 300), 'max_prompt_length', 1, 1200)
         if type(self.max_prompt) is not int:
             raise ValueError('image_gen.max_prompt_length 应为整数')
         acknowledge = options.get('acknowledge', True)

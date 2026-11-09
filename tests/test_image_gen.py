@@ -325,6 +325,15 @@ class PluginTests(unittest.TestCase):
         self.send()
         self.assertEqual(self.plugin.provider.generate.call_count, 0)
 
+    def test_prompt_limit_boundary_is_1200(self):
+        self.ctx.config = dict(self.ctx.config, max_prompt_length=1200)
+        plugin = Plugin()
+        plugin.on_load(self.ctx)
+        self.assertEqual(plugin.max_prompt, 1200)
+        self.ctx.config = dict(self.ctx.config, max_prompt_length=1201)
+        with self.assertRaises(ValueError):
+            Plugin().on_load(self.ctx)
+
     def test_invalid_options_do_not_load(self):
         for values in ({'cooldown_seconds': -1}, {'max_prompt_length': 0}, {'acknowledge': 1},
                        {'image_config_file': '../image_config.json'}):
