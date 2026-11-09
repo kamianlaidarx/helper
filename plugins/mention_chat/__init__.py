@@ -22,6 +22,9 @@ IMAGE_WINDOW_SECONDS = 300
 ROOM_IMAGE_SECONDS = 600
 MAX_REMEMBERED = 32
 MAX_IMAGES = 3
+# 同一条消息被投递两次（桥接重放、两个 worker 之一重复收）时，画像只做一次：
+# 评价要花一次模型调用，画图还要花钱，重复一次就是双份。
+REPEAT_WINDOW_SECONDS = 15
 
 
 def _number(value, name, low, high):
@@ -58,6 +61,7 @@ class Plugin:
         self.portrait_directory = self.project_root / ".runtime/portrait" / hashlib.sha256(
             self.members.account.encode("ascii")).hexdigest()[:16]
         self.portraits = {}  # 群 → 当天已画几张，只防账单，不落库。
+        self.recent_requests = {}  # 消息指纹 → 处理时间，只防同一条消息被处理两次。
         self.provider = None
         # 生图要十几秒，绝不能占住插件唯一的回调线程。
         self.portrait_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="portrait")
@@ -81,6 +85,9 @@ class Plugin:
             request = portrait.intent(strip_at_labels(message.text))
             if request is not None:
                 # 「画像」里也带「画」字，必须排在 image_gen 那条判断前面，否则会被当成画图吞掉。
+                if self._repeat(message):
+                    ctx.logger.warning("画像请求重复投递，忽略第二条：room=%s", message.chat_id)
+                    return
                 self.reply_portrait(message, ctx, targets[0], request)
                 return
         if ctx.plugin_is_active("image_gen") and wants_image(strip_at_labels(message.text)):
@@ -132,15 +139,30 @@ class Plugin:
             ctx.logger.warning("画像生成失败：%s", error)
             self._portrait_say(message, ctx, "我这会儿有点卡壳，等下手再问我。")
             return
-        bullets = portrait.parse_reply(payload)
+        verdict = portrait.parse_reply(payload)
+        bullets = verdict.lines
         if not bullets:
             self._portrait_say(message, ctx, "我看了他这几句话，还想不好怎么说，换个人或者晚点再问？")
             return
         body = "\n".join([f"{display} 给我的感觉是——", *bullets, portrait.DISCLAIMER])
         self._portrait_say(message, ctx, body)
         if request.wants_image:
-            self._queue_portrait(message, ctx, bullets)
-        ctx.logger.info("画像完成：room=%s lines=%d image=%s", room, len(lines), request.wants_image)
+            self._queue_portrait(message, ctx, bullets, verdict.gender)
+        ctx.logger.info("画像完成：room=%s lines=%d gender=%s image=%s", room, len(lines),
+                        verdict.gender, request.wants_image)
+
+    def _repeat(self, message):
+        """同一条消息是不是刚处理过：能拦进程内重复投递，跨进程只能靠单实例运行。"""
+        now = time.monotonic()
+        key = (message.session_id, message.chat_id, message.sender_id,
+               getattr(message, "sequence", 0), message.text.strip()[:40])
+        for old, at in list(self.recent_requests.items()):
+            if now - at > REPEAT_WINDOW_SECONDS:
+                self.recent_requests.pop(old, None)
+        if key in self.recent_requests:
+            return True
+        self.recent_requests[key] = now
+        return False
 
     def _portrait_say(self, message, ctx, text):
         try:
@@ -150,7 +172,7 @@ class Plugin:
         except Exception as error:  # 发送失败不能把插件线程带崩
             ctx.logger.warning("画像消息发送失败（%s）", type(error).__name__)
 
-    def _queue_portrait(self, message, ctx, bullets):
+    def _queue_portrait(self, message, ctx, bullets, gender="不确定"):
         """每人每天最多画 IMAGE_PER_DAY 张：图比文字贵，也比文字难收回。"""
         day = time.strftime("%Y-%m-%d")
         stamp, used = self.portraits.get(message.chat_id, (day, 0))
@@ -159,7 +181,7 @@ class Plugin:
             self._portrait_say(message, ctx, f"今天已经画过 {used} 张画像了，明天再画。")
             return
         self.portraits[message.chat_id] = (day, used + 1)
-        prompt = portrait.image_prompt(bullets)
+        prompt = portrait.image_prompt(bullets, gender)
         try:
             self.portrait_pool.submit(self._draw_portrait, message, ctx, prompt)
         except RuntimeError:

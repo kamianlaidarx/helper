@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 
-from wxbot_framework.image_intent import wants_image
+from wxbot_framework.image_intent import is_portrait_request, wants_image
 from wxbot_framework.images import image_data_url
 from wxbot_framework.mentions import strip_at_labels
 
@@ -123,6 +123,10 @@ class Plugin:
         prompt = strip_at_labels(message.text)
         if not wants_image(prompt):
             # 普通聊天或看图提问交给 mention_chat，两个插件不抢同一条艾特。
+            return
+        if is_portrait_request(prompt):
+            # 「画一张 @某人 的画像」由 mention_chat 出评价加插画，这里让路，
+            # 否则同一个艾特会被两个插件各画一次、各回一句。
             return
         if len(prompt) > self.max_prompt:
             self._say(message, ctx, f'描述请控制在 {self.max_prompt} 字以内。')

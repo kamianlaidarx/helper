@@ -11,6 +11,7 @@
 import importlib.util
 import re
 import sys
+from dataclasses import dataclass
 
 from wxbot_framework.personality import system_with_personality
 
@@ -48,7 +49,10 @@ _SYSTEM = """群里有人想听你说说另一位成员是个什么样的人。
 - 用你自己的性格和说话方式写，像平时在群里聊天那样，别写成测评报告。
 - 只谈说话风格、关心的事、待人方式；不评价外貌、年龄、收入、职业、学历、地域，不做人身攻击。
 - 3 到 {max_lines} 行，每行一句，尽量短，不加编号、不加引号、不用 markdown。
-- 只输出 JSON：{{"评价": ["第一句", "第二句", "第三句"]}}"""
+- 另外判断他的性别，只能依据他自己的说法、别人对他的称呼、他的昵称和用词习惯；
+  没有把握就写「不确定」，不要按刻板印象猜，也不要为了让画像好看而硬猜。
+- 只输出 JSON：{{"评价": ["第一句", "第二句", "第三句"], "性别": "男"}}，
+  性别只能是「男」「女」「不确定」三者之一。"""
 
 
 class Request:
@@ -111,8 +115,37 @@ def build_prompt(state, speaker, display, lines):
     return system, user
 
 
+GENDERS = ("男", "女", "不确定")
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """模型的一次评价：几句评价 + 一个性别判断（只用于画像，不进聊天正文）。"""
+
+    lines: tuple = ()
+    gender: str = "不确定"
+
+    def __bool__(self):
+        return bool(self.lines)
+
+
+def _gender(payload):
+    """把模型给的性别归一成三种；只认明确写了男或女的，其余一律不确定。"""
+    if not isinstance(payload, dict):
+        return "不确定"
+    raw = payload.get("性别") or payload.get("gender") or ""
+    if not isinstance(raw, str):
+        return "不确定"
+    text = raw.strip()
+    if "女" in text:
+        return "女"
+    if "男" in text:
+        return "男"
+    return "不确定"
+
+
 def parse_reply(payload):
-    """从模型结果里取评价句：最多 MAX_LINES 句，过长、越界、空的都丢掉。"""
+    """从模型结果里取评价句与性别：最多 MAX_LINES 句，过长、越界、空的都丢掉。"""
     if isinstance(payload, dict):
         raw = payload.get("评价") or payload.get("评价句") or payload.get("reply") or []
     elif isinstance(payload, list):
@@ -139,16 +172,27 @@ def parse_reply(payload):
         lines.append(text)
         if len(lines) >= MAX_LINES:
             break
-    return lines
+    return Verdict(tuple(lines), _gender(payload))
 
 
-def image_prompt(lines):
-    """把评价折成画面描述；刻意不描述长相、也不带名字，避免画成对真人的丑化。"""
-    traits = "、".join(lines[:MAX_LINES]) or "话不多但很有意思"
-    return (f"一张卡通风格的群友形象插画，主角代表一个常在群里聊天的人，"
-            f"画面要传达这些性格特征：{traits}。"
-            f"半身构图、温暖明亮的光线、扁平插画质感，人物抽象化，不追求与真人相似；"
-            f"不出现文字、不出现真人照片质感、不出现任何群体标识。")
+_STYLE = ("写实人像摄影风格，自然光，浅景深，日常生活场景，面部细节清晰自然，"
+          "像一张手机随手拍的合影；不是卡通、不是动漫、不是插画、不是油画；"
+          "不出现文字、水印、logo，不出现任何群体标识")
+_GENDER_HINT = {"男": "三十岁上下的男性", "女": "三十岁上下的女性",
+                "不确定": "不刻意强调性别特征的中性人物"}
+
+
+def image_prompt(lines, gender="不确定"):
+    """把评价折成画面描述；不带名字、不描述具体长相。
+
+    性别只来自模型对被艾特者说话内容的判断，没把握时用中性形象，
+    避免把一个女生画成男的（或反过来）。
+    """
+    traits = "、".join(tuple(lines)[:MAX_LINES]) or "话不多但很有意思"
+    who = _GENDER_HINT.get(gender, _GENDER_HINT["不确定"])
+    return (f"一张{_STYLE}。画面里是一位{who}，"
+            f"神态与穿着要传达这些特征：{traits}。"
+            f"不要求与真人长得完全一致，但人物比例与光影要接近真实照片。")
 
 
 def load_provider(source, config):

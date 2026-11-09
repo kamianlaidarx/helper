@@ -27,3 +27,16 @@ def wants_image(text):
     if any(lowered.startswith(trigger) for trigger in TRIGGERS):
         return True
     return any(pattern.search(value) for pattern in REQUESTS)
+
+
+# 「画一张 @某人 的画像」既像生图又像人物画像：这条路由 mention_chat 出图文，
+# image_gen 见到就要让路，否则同一个艾特会被两个插件各画一次。
+PORTRAIT_MARKERS = ("画像", "画个像", "画像照")
+
+
+def is_portrait_request(text):
+    """这段文字是不是在要某个群成员的画像（交给 mention_chat，不要生图）。"""
+    value = text or ""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return any(marker in value for marker in PORTRAIT_MARKERS)

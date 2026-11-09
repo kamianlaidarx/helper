@@ -64,30 +64,43 @@ class SampleTests(unittest.TestCase):
 
 
 class ReplyParseTests(unittest.TestCase):
+    def lines(self, payload):
+        return list(portrait.parse_reply(payload).lines)
+
     def test_dict_list_and_text_payloads(self):
-        self.assertEqual(portrait.parse_reply({"评价": ["说话直接", "爱抬杠"]}), ["说话直接", "爱抬杠"])
-        self.assertEqual(portrait.parse_reply(["说话直接"]), ["说话直接"])
-        self.assertEqual(portrait.parse_reply({"评价": "说话直接\n爱抬杠"}), ["说话直接", "爱抬杠"])
+        self.assertEqual(self.lines({"评价": ["说话直接", "爱抬杠"]}), ["说话直接", "爱抬杠"])
+        self.assertEqual(self.lines(["说话直接"]), ["说话直接"])
+        self.assertEqual(self.lines({"评价": "说话直接\n爱抬杠"}), ["说话直接", "爱抬杠"])
 
     def test_markup_and_numbering_are_stripped(self):
         payload = {"评价": ["- **说话直接**", "2. 爱抬杠", "「句子很短」"]}
-        self.assertEqual(portrait.parse_reply(payload), ["说话直接", "爱抬杠", "句子很短"])
+        self.assertEqual(self.lines(payload), ["说话直接", "爱抬杠", "句子很短"])
 
     def test_appearance_judgements_are_dropped(self):
         payload = {"评价": ["他颜值很高", "说话直接", "身材不错"]}
-        self.assertEqual(portrait.parse_reply(payload), ["说话直接"])
+        self.assertEqual(self.lines(payload), ["说话直接"])
 
     def test_at_most_max_lines_and_no_duplicates(self):
         payload = {"评价": ["一", "一", "二", "三", "四", "五"]}
-        self.assertEqual(portrait.parse_reply(payload), ["一", "二", "三", "四"])
+        self.assertEqual(self.lines(payload), ["一", "二", "三", "四"])
 
     def test_overlong_lines_and_junk_are_dropped(self):
         payload = {"评价": ["好" * 200, 7, "", "说话直接"]}
-        self.assertEqual(portrait.parse_reply(payload), ["说话直接"])
+        self.assertEqual(self.lines(payload), ["说话直接"])
 
     def test_unknown_payload_shapes_are_empty(self):
         for payload in (None, {}, {"评价": []}, 5, {"其它": ["x"]}):
-            self.assertEqual(portrait.parse_reply(payload), [], repr(payload))
+            verdict = portrait.parse_reply(payload)
+            self.assertEqual(list(verdict.lines), [], repr(payload))
+            self.assertEqual(verdict.gender, "不确定", repr(payload))
+            self.assertFalse(verdict)
+
+    def test_gender_is_read_from_the_same_payload(self):
+        self.assertEqual(portrait.parse_reply({"评价": ["a1"], "性别": "男"}).gender, "男")
+        self.assertEqual(portrait.parse_reply({"评价": ["a1"], "性别": "女"}).gender, "女")
+        self.assertEqual(portrait.parse_reply({"评价": ["a1"], "性别": "不确定"}).gender, "不确定")
+        self.assertEqual(portrait.parse_reply({"评价": ["a1"], "gender": "female"}).gender, "不确定")
+        self.assertEqual(portrait.parse_reply({"评价": ["a1"], "性别": "女生"}).gender, "女")
 
 
 class PromptTests(unittest.TestCase):
@@ -98,13 +111,24 @@ class PromptTests(unittest.TestCase):
         self.assertIn("小红", user)
         self.assertIn("- 第一句", user)
         self.assertIn("JSON", user)
+        self.assertIn("性别", system)
 
-    def test_image_prompt_has_no_name_and_no_real_face(self):
+    def test_image_prompt_is_realistic_and_keeps_the_traits(self):
         prompt = portrait.image_prompt(["说话直接", "爱抬杠"])
         self.assertIn("说话直接", prompt)
-        self.assertIn("不追求与真人相似", prompt)
-        for word in ("小红", "wxid", "@"):
+        self.assertIn("写实", prompt)
+        self.assertIn("不是卡通", prompt)
+        self.assertIn("不要求与真人长得完全一致", prompt)
+        for word in ("小红", "wxid", "@", "卡通风格"):
             self.assertNotIn(word, prompt)
+
+    def test_image_prompt_maps_gender(self):
+        self.assertIn("男性", portrait.image_prompt(["a"], "男"))
+        self.assertIn("女性", portrait.image_prompt(["a"], "女"))
+        neutral = portrait.image_prompt(["a"], "不确定")
+        self.assertIn("中性人物", neutral)
+        self.assertNotIn("男性", neutral)
+        self.assertNotIn("女性", neutral)
 
     def test_image_prompt_works_without_lines(self):
         self.assertIn("话不多", portrait.image_prompt([]))
@@ -271,6 +295,7 @@ class PluginTests(unittest.TestCase):
         plugin.project_root = Path(tempfile.gettempdir())
         plugin.portrait_directory = plugin.project_root
         plugin.portraits = {}
+        plugin.recent_requests = {}
         plugin.provider = None
         plugin.portrait_pool = _InlinePool()
         plugin.sleep = lambda seconds: None
@@ -313,6 +338,24 @@ class PluginTests(unittest.TestCase):
         ctx = FakeCtx()
         self.plugin(ctx).on_message(at_message("你觉得 是个什么样的人", at=(ACCOUNT,)), ctx)
         self.assertEqual(ctx.members.calls, [])
+
+    def test_same_message_twice_is_answered_once(self):
+        ctx = FakeCtx()
+        plugin = self.plugin(ctx)
+        plugin.on_message(at_message("你觉得 是个什么样的人"), ctx)
+        plugin.on_message(at_message("你觉得 是个什么样的人"), ctx)
+        self.assertEqual(len(ctx.sent), 1)
+        self.assertEqual(len(ctx.members.calls), 1)
+
+    def test_gender_reaches_the_image_prompt(self):
+        ctx = FakeCtx(payload={"评价": ["说话直接"], "性别": "女"})
+        plugin = self.plugin(ctx)
+        prompts = []
+        plugin._draw_portrait = lambda message, ctx, prompt: prompts.append(prompt)
+        plugin.on_message(at_message("画一张 的画像"), ctx)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("女性", prompts[0])
+        self.assertNotIn("男性", prompts[0])
 
     def test_daily_image_cap(self):
         ctx = FakeCtx()
