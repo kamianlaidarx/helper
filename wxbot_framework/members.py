@@ -57,6 +57,8 @@ class ConversationSnapshot:
     # 身份元数据：speaker_id 来自消息 sender_id，is_owner 只看群配置的 owner_ids 白名单。
     speaker_id: str = ""
     is_owner: bool = False
+    # 机器人自己在本群的叫法（群昵称 + 微信名）：模型上下文里丢掉这些 @，其余保留。
+    self_names: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -447,7 +449,8 @@ class MemberStore:
                                         self.display_name(message.sender_id, message.chat_id) or "群友",
                                         tuple(reversed(previous)), message.text,
                                         speaker_id=message.sender_id,
-                                        is_owner=self.is_owner(message.chat_id, message.sender_id))
+                                        is_owner=self.is_owner(message.chat_id, message.sender_id),
+                                        self_names=self._self_names(message.chat_id))
 
     @contextmanager
     def delivery_guard(self, snapshot):
@@ -487,6 +490,14 @@ class MemberStore:
         """群内绑定优先；其他群的绑定永远不作为默认名字。"""
         member = self.find_by_wxid(wxid, room)
         return member.display_name if member else self.group_nickname(wxid, room) or self.wechat_name(wxid)
+
+    def _self_names(self, room):
+        """机器人自己在本群可能被叫成的名字，用来把自己的 @ 从模型上下文里去掉。"""
+        names = []
+        for name in (self.group_nickname(self.account, room), self.wechat_name(self.account)):
+            if isinstance(name, str) and name.strip() and name.strip() not in names:
+                names.append(name.strip())
+        return tuple(names)
 
     def remember_group_nickname(self, wxid, room, nickname):
         """微信群昵称按账号、群和成员隔离，不覆盖 /绑定 的称呼。"""

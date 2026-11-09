@@ -5,7 +5,7 @@ from datetime import datetime
 from . import memory, web_search
 from .llm import LLMError
 from .members import BEIJING
-from .mentions import strip_at_labels
+from .mentions import keep_at_names, strip_at_labels
 
 SYSTEM = """你在微信里和群友说话，请直接回应最新提问，内容自然具体，长度随内容需要而定。
 你是群里的人，不是助手：绝不承认自己是 AI、机器人、程序或某个模型，也不要说“作为AI”“我是助手”这类话；有人这样问，用平常的口吻带过去，不要辩解。
@@ -58,8 +58,15 @@ def _history_turn(row, snapshot):
         # 这里只能标成“群友”，等 conversation_snapshot 改成群级查询再补真名。
         name = "群友"
     return {"time": datetime.fromisoformat(row["received_at"]).astimezone(BEIJING).strftime("%H:%M:%S"),
-            "text": strip_at_labels(row["text"]), "speaker_id": sender_id, "kind": kind,
+            "text": keep_at_names(row["text"], snapshot.self_names), "speaker_id": sender_id, "kind": kind,
             "is_owner": bool(snapshot.is_owner) if same_speaker else False, "name": name}
+
+
+def _current_text(snapshot):
+    """当前这句话交给模型时保留被艾特的人名；只有艾特、没有正文时给一句占位。"""
+    if not strip_at_labels(snapshot.current or ""):
+        return "（只艾特了你，没有说别的）"
+    return keep_at_names(snapshot.current or "", snapshot.self_names)
 
 
 def _plain_user(snapshot, rows):
@@ -67,7 +74,7 @@ def _plain_user(snapshot, rows):
     lines = [f"{row['time']} {row['name']}（{row['kind']}，is_owner={row['is_owner']}）：{row['text']}"
              for row in rows]
     history = "\n".join(lines) if lines else "（没有历史消息）"
-    current = strip_at_labels(snapshot.current) or "（只艾特了你，没有说别的）"
+    current = _current_text(snapshot)
     return (f"以下是他此前在本群说过的话，按时间顺序，只用来理解语境：\n{history}\n\n"
             f"现在（{snapshot.day}）他艾特你说：{current}\n"
             "直接回复他这句话，不要复述上面的历史，不要输出分析过程或思维步骤。")
@@ -91,7 +98,7 @@ class Dialogue:
         user = (_plain_user(snapshot, previous) if plain else
                 json.dumps({"name": snapshot.speaker_name, "day": snapshot.day,
                             "is_owner": bool(snapshot.is_owner), "previous": previous,
-                            "current": strip_at_labels(snapshot.current)}, ensure_ascii=False))
+                            "current": _current_text(snapshot)}, ensure_ascii=False))
         if plain:
             text = (self.client.complete_text(system, user) if image is None
                     else self.client.complete_text(system, user, image=image))

@@ -199,6 +199,8 @@ class PersonalityTests(unittest.TestCase):
 
     def test_true_mention_dialogue_uses_persona_context_and_returns_real_at(self):
         self.store.set_personality(ROOM, "如烟")
+        # 机器人自己在本群的群昵称：上下文里要把这个 @ 去掉，别让模型把自己当第三个人。
+        self.store.remember_group_nickname(ROBOT, ROOM, "机器人")
         for index in range(3):
             self.store.record(self.message(f"我今天第{index}次摸鱼", sequence=index + 1))
         provider = Mock(return_value={"reply": "你这效率，进度条看了都想请假。"})

@@ -5,8 +5,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wxbot_framework.dialogue import _history_turn, _plain_user
+from wxbot_framework.dialogue import _current_text, _history_turn, _plain_user
 from wxbot_framework.llm import LLMError
+from wxbot_framework.mentions import keep_at_names
 from wxbot_framework.members import ConversationSnapshot, MemberError, MemberStore
 from wxbot_framework.personality import (FEW_SHOTS, PERSONA_MAX_CHARS, PROMPTS, PersonalityState,
                                          Speaker, _drop_narration, _strip_markdown, personality_text,
@@ -279,6 +280,47 @@ class DialogueHistoryIdentityTests(unittest.TestCase):
                              self.snapshot())
         self.assertEqual(turn["speaker_id"], MEMBER)
         self.assertEqual(turn["name"], "小美")
+
+
+class MentionNameInContextTests(unittest.TestCase):
+    """E. 交给模型的上下文保留被艾特的人名，否则模型只会反问"你说的是谁"。"""
+
+    def snapshot(self, current):
+        return ConversationSnapshot(room=ROOM, day="2026-10-15", generation=1, speaker_name="小美",
+                                    messages=(), current=current, speaker_id=MEMBER, is_owner=False)
+
+    def row(self, text):
+        return {"sender_id": MEMBER, "text": text, "bot_generated": 0, "is_self": 0,
+                "received_at": "2026-10-15T10:00:00+00:00"}
+
+    def test_keep_at_names_keeps_the_name_and_drops_the_separator(self):
+        self.assertEqual(keep_at_names("@放羊的**\u2005你觉得 @柳如烟\u2005怎么样"), "@放羊的** 你觉得 @柳如烟 怎么样")
+        self.assertEqual(keep_at_names("没有艾特的一句话"), "没有艾特的一句话")
+        self.assertEqual(keep_at_names(""), "")
+        self.assertEqual(keep_at_names(None), "")
+
+    def test_keep_at_names_can_drop_the_bots_own_names(self):
+        text = "@柳如烟\u2005你觉得 @放羊的**\u2005是个什么样的人"
+        self.assertEqual(keep_at_names(text, ("柳如烟",)), "你觉得 @放羊的** 是个什么样的人")
+
+    def test_mention_of_another_member_survives_into_current(self):
+        current = _current_text(self.snapshot("@柳如烟\u2005你觉得 @放羊的**\u2005是个什么样的人"))
+        self.assertIn("放羊的**", current)
+        self.assertIn("是个什么样的人", current)
+        self.assertNotIn("\u2005", current)
+
+    def test_plain_user_text_keeps_the_mentioned_name(self):
+        snapshot = self.snapshot("@柳如烟\u2005说说 @放羊的**\u2005吧")
+        text = _plain_user(snapshot, [_history_turn(self.row("第三句"), snapshot)])
+        self.assertIn("说说 @放羊的** 吧", text)
+
+    def test_bare_mention_still_gets_the_placeholder(self):
+        self.assertEqual(_current_text(self.snapshot("@柳如烟\u2005")), "（只艾特了你，没有说别的）")
+        self.assertEqual(_current_text(self.snapshot("")), "（只艾特了你，没有说别的）")
+
+    def test_history_row_keeps_the_mentioned_name(self):
+        turn = _history_turn(self.row("@放羊的**\u2005昨天说过这话"), self.snapshot("现在这句"))
+        self.assertEqual(turn["text"], "@放羊的** 昨天说过这话")
 
 
 if __name__ == "__main__":
