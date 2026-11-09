@@ -421,5 +421,53 @@ class DailySummaryTests(unittest.TestCase):
         self.assertGreaterEqual(app.members.rollover.call_count, 2)
 
 
+class SummaryGuardTests(unittest.TestCase):
+    """保留策略不该影响总结：当天快照本来就按 received_at 取当天范围。"""
+
+    def setUp(self):
+        scratch = ROOT / ".runtime/tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=scratch)
+        self.root = Path(self.temporary.name)
+        self.stores = []
+        self.services = []
+
+    def tearDown(self):
+        for service in self.services:
+            service.close()
+        for store in self.stores:
+            store.close()
+        self.temporary.cleanup()
+
+    def load(self, options):
+        path = self.root / "members.json"
+        path.write_text(json.dumps(options), encoding="utf-8")
+        store = MemberStore(path, ROBOT, now=lambda: datetime(2026, 10, 10, 15, 59, 59, tzinfo=timezone.utc))
+        self.stores.append(store)
+        store.initialize()
+        backend = Backend()
+        service = ServiceFacade(text_delay={"enabled": False})
+        self.services.append(service)
+        service.bind(backend)
+        ctx = PluginContext("summary", {}, service, [], member_store=store)
+        ctx._llm = Mock(complete_json=lambda system, user: {"summary": "讨论了几句。"})
+        plugin = SummaryPlugin()
+        plugin.on_load(ctx)
+        return store, plugin
+
+    def test_retained_history_without_daily_clear_is_accepted(self):
+        store, plugin = self.load({"database_file": "data.sqlite3", "history_enabled": True,
+                                   "daily_clear": False, "retention_days": 30,
+                                   "groups": {ROOM: []}})
+        self.assertIsNotNone(plugin.summarizer)
+        self.assertEqual(store.retention_days, 30)
+
+    def test_missing_history_still_rejected(self):
+        with self.assertRaises(ValueError) as caught:
+            self.load({"database_file": "data.sqlite3", "history_enabled": False,
+                       "groups": {ROOM: []}})
+        self.assertIn("history_enabled", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
