@@ -2,9 +2,13 @@
 from pathlib import Path
 
 
+DEFAULT_MESSAGE = "这个目录的机器人已在运行，请先停止另一个 main.py"
+
+
 class InstanceLock:
-    def __init__(self, path):
+    def __init__(self, path, *, message=DEFAULT_MESSAGE):
         self.path = Path(path)
+        self.message = message
         self.file = None
 
     def acquire(self):
@@ -20,7 +24,7 @@ class InstanceLock:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as error:
             handle.close()
-            raise RuntimeError("这个目录的机器人已在运行，请先停止另一个 main.py") from error
+            raise RuntimeError(str(self.message)) from error
         self.file = handle
         return self
 

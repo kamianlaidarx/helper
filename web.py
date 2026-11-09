@@ -68,28 +68,33 @@ def worker_main(workspace):
     workspace = workspace.resolve()
     if workspace != ROOT and not workspace.is_relative_to((ROOT / '.runtime/robots').resolve()):
         raise ValueError('机器人工作目录不在项目允许范围')
-    controller = PanelController(ROOT, workspace=workspace)
-    configure_logging(controller.store.load(), directory=workspace / 'logs', console_enabled=False)
-    # configure_logging(force=True) 会替换根处理器，重新接上本机器人的日志缓冲。
-    logging.getLogger().addHandler(controller.logs)
-    server = PanelServer(controller, 0)
-    def parent_lifetime():
+    # 一个工作目录只允许一个后台进程：两个进程各自订阅同一条群消息，群里就会看到重复回复。
+    # 机器人本身还有 .runtime/bot.lock，但那道锁只在"启动机器人"时生效，拦不住空闲的重复进程。
+    lock = InstanceLock(workspace / '.runtime/worker.lock',
+                        message='这个机器人已经有一个后台进程在运行，请先在管理台里停止它')
+    with lock:
+        controller = PanelController(ROOT, workspace=workspace)
+        configure_logging(controller.store.load(), directory=workspace / 'logs', console_enabled=False)
+        # configure_logging(force=True) 会替换根处理器，重新接上本机器人的日志缓冲。
+        logging.getLogger().addHandler(controller.logs)
+        server = PanelServer(controller, 0)
+        def parent_lifetime():
+            try:
+                sys.stdin.buffer.read(1)
+            finally:
+                controller.stop_event.set()
+        threading.Thread(target=parent_lifetime, name='PanelOwner', daemon=True).start()
+        print(json.dumps({'port': server.server_address[1], 'token': server.token}), flush=True)
         try:
-            sys.stdin.buffer.read(1)
+            with ShutdownHandlers(controller):
+                while not controller.stop_event.is_set():
+                    server.handle_request()
         finally:
-            controller.stop_event.set()
-    threading.Thread(target=parent_lifetime, name='PanelOwner', daemon=True).start()
-    print(json.dumps({'port': server.server_address[1], 'token': server.token}), flush=True)
-    try:
-        with ShutdownHandlers(controller):
-            while not controller.stop_event.is_set():
-                server.handle_request()
-    finally:
-        server.server_close()
-        try:
-            controller.close()
-        except KeyboardInterrupt:
-            pass
+            server.server_close()
+            try:
+                controller.close()
+            except KeyboardInterrupt:
+                pass
     return 0
 
 

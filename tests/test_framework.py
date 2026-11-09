@@ -366,6 +366,14 @@ class FrameworkTests(unittest.TestCase):
         with InstanceLock(path):
             pass
 
+    def test_single_instance_lock_uses_the_given_message(self):
+        path = self.root / "worker.lock"
+        message = "这个机器人已经有一个后台进程在运行，请先在管理台里停止它"
+        with InstanceLock(path, message=message):
+            with self.assertRaises(RuntimeError) as caught:
+                InstanceLock(path, message=message).acquire()
+        self.assertEqual(str(caught.exception), message)
+
     def test_plugins_reply_to_friend_and_group_conversations(self):
         from wxbot_framework.text import TextRouter
         router = TextRouter()
