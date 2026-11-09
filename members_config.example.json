@@ -1,7 +1,8 @@
 {
   "database_file": ".runtime/member_data.sqlite3",
   "history_enabled": true,
-  "daily_clear": true,
+  "daily_clear": false,
+  "retention_days": 30,
   "groups": {},
   "owner_ids": {}
 }

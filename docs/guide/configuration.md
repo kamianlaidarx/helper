@@ -108,14 +108,17 @@
 {
   "database_file": ".runtime/member_data.sqlite3",
   "history_enabled": true,
-  "daily_clear": true,
+  "daily_clear": false,
+  "retention_days": 30,
   "groups": {
     "12345678@chatroom": []
   }
 }
 ```
 
-将示例群 ID 换成自己的实际群 ID，成员列表可以为空。`history_enabled` 启用当天文本记录，`daily_clear` 在北京时间每天 0 点清理旧日文本；停机跨天时，下次启动会补清理。绑定称呼保留。
+将示例群 ID 换成自己的实际群 ID，成员列表可以为空。`history_enabled` 启用文本记录，`daily_clear` 在北京时间每天 0 点清理旧日文本；停机跨天时，下次启动会补清理。绑定称呼保留。
+
+`daily_clear` 与 `retention_days` 二选一：`daily_clear` 为 `true` 时只留当天发言；要为成员画像之类的功能保留历史，把 `daily_clear` 设为 `false`，再用 `retention_days` 指定保留多少天（0 表示永久保留，上限 365）。
 
 如果 `chat_allowlist` 非空，还需要把该群 ID 加入会话白名单。两者的操作见[账号与群聊](./account-and-groups.md)。
 

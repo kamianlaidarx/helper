@@ -1,21 +1,33 @@
 """真正艾特机器人后，用本群人格回复当前发言者；刚发过的图片会一起交给视觉模型。"""
+import hashlib
 import random
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from wxbot_framework import humanize
 from wxbot_framework.dialogue import Dialogue
 from wxbot_framework.image_intent import wants_image
 from wxbot_framework.images import image_data_url
 from wxbot_framework.llm import LLMError
-from wxbot_framework.members import SnapshotExpired
+from wxbot_framework.members import MemberError, SnapshotExpired
 from wxbot_framework.mentions import strip_at_labels
 from wxbot_framework.personality import personality_text
 from wxbot_framework.speech import deliver_model_reply
+
+from . import portrait
 
 IMAGE_WINDOW_SECONDS = 300
 ROOM_IMAGE_SECONDS = 600
 MAX_REMEMBERED = 32
 MAX_IMAGES = 3
+
+
+def _number(value, name, low, high):
+    if type(value) not in (int, float) or not low <= value <= high:
+        raise ValueError(f"mention_chat.{name} 应为 {low} 到 {high} 之间的数字")
+    return int(value)
 
 
 class Plugin:
@@ -30,6 +42,28 @@ class Plugin:
         # 拟人层要随机和等待；测试里这两个都能换掉，免得跑一次测试等好几秒。
         self.sleep = time.sleep
         self.rng = random.Random()
+        options = ctx.config
+        enabled = options.get("portrait_enabled", True)
+        if type(enabled) is not bool:
+            raise ValueError("mention_chat.portrait_enabled 必须是布尔值")
+        self.portrait_enabled = enabled
+        self.portrait_days = _number(options.get("portrait_days", portrait.DAYS), "portrait_days", 1, 365)
+        self.portrait_limit = _number(options.get("portrait_limit", portrait.LIMIT), "portrait_limit", 5, 200)
+        config_file = options.get("image_config_file", "image_config.json")
+        if (not isinstance(config_file, str) or not 0 < len(config_file) <= 120 or
+                Path(config_file).name != config_file):
+            raise ValueError("mention_chat.image_config_file 应为仓库根目录下的文件名")
+        self.image_config_file = config_file
+        self.project_root = getattr(ctx, "project_root", None) or Path(__file__).resolve().parents[2]
+        self.portrait_directory = self.project_root / ".runtime/portrait" / hashlib.sha256(
+            self.members.account.encode("ascii")).hexdigest()[:16]
+        self.portraits = {}  # 群 → 当天已画几张，只防账单，不落库。
+        self.provider = None
+        # 生图要十几秒，绝不能占住插件唯一的回调线程。
+        self.portrait_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="portrait")
+
+    def on_unload(self, ctx):
+        self.portrait_pool.shutdown(wait=False, cancel_futures=True)
 
     def on_message(self, message, ctx):
         if message.is_self or not message.is_group or message.chat_id not in self.members.groups:
@@ -41,6 +75,14 @@ class Plugin:
                 message.data.get("bot_generated") or not message.data.get("is_at_self") or
                 self.members.account not in message.data.get("at_members", ())):
             return
+        targets = [uid for uid in message.data.get("at_members", ())
+                   if isinstance(uid, str) and uid and uid != self.members.account]
+        if self.portrait_enabled and targets:
+            request = portrait.intent(strip_at_labels(message.text))
+            if request is not None:
+                # 「画像」里也带「画」字，必须排在 image_gen 那条判断前面，否则会被当成画图吞掉。
+                self.reply_portrait(message, ctx, targets[0], request)
+                return
         if ctx.plugin_is_active("image_gen") and wants_image(strip_at_labels(message.text)):
             # 这条艾特是要画图，交给 image_gen 插件，避免文本回复和图片同时出现。
             return
@@ -63,6 +105,101 @@ class Plugin:
                 ctx.reply(message, "暂时无法回复，请稍后再艾特我。", delivery_guard=guard)
             except SnapshotExpired:
                 pass
+
+    def reply_portrait(self, message, ctx, wxid, request):
+        """拿这个人自己的发言写一段评价；明确要画像时再排一张图。"""
+        room = message.chat_id
+        display = self.members.display_name(wxid, room) or "这位群友"
+        try:
+            rows = self.members.member_messages(room, wxid, days=self.portrait_days,
+                                                limit=self.portrait_limit)
+        except MemberError as error:
+            ctx.logger.warning("画像取样失败：%s", error)
+            return
+        lines = portrait.sample(rows)
+        if not lines:
+            self._portrait_say(message, ctx, f"我还没听到 {display} 在群里说过几句话，等聊起来再问我。")
+            return
+        personality = ctx.personality(message)
+        speaker = ctx.speaker(message)
+        system, user = portrait.build_prompt(personality, speaker, display, lines)
+        try:
+            payload = ctx.llm_for(message, personality=personality,
+                                  speaker=speaker).complete_json(system, user)
+        except SnapshotExpired:
+            return
+        except LLMError as error:
+            ctx.logger.warning("画像生成失败：%s", error)
+            self._portrait_say(message, ctx, "我这会儿有点卡壳，等下手再问我。")
+            return
+        bullets = portrait.parse_reply(payload)
+        if not bullets:
+            self._portrait_say(message, ctx, "我看了他这几句话，还想不好怎么说，换个人或者晚点再问？")
+            return
+        body = "\n".join([f"{display} 给我的感觉是——", *bullets, portrait.DISCLAIMER])
+        self._portrait_say(message, ctx, body)
+        if request.wants_image:
+            self._queue_portrait(message, ctx, bullets)
+        ctx.logger.info("画像完成：room=%s lines=%d image=%s", room, len(lines), request.wants_image)
+
+    def _portrait_say(self, message, ctx, text):
+        try:
+            ctx.reply(message, text)
+        except SnapshotExpired:
+            pass
+        except Exception as error:  # 发送失败不能把插件线程带崩
+            ctx.logger.warning("画像消息发送失败（%s）", type(error).__name__)
+
+    def _queue_portrait(self, message, ctx, bullets):
+        """每人每天最多画 IMAGE_PER_DAY 张：图比文字贵，也比文字难收回。"""
+        day = time.strftime("%Y-%m-%d")
+        stamp, used = self.portraits.get(message.chat_id, (day, 0))
+        used = 0 if stamp != day else used
+        if used >= portrait.IMAGE_PER_DAY:
+            self._portrait_say(message, ctx, f"今天已经画过 {used} 张画像了，明天再画。")
+            return
+        self.portraits[message.chat_id] = (day, used + 1)
+        prompt = portrait.image_prompt(bullets)
+        try:
+            self.portrait_pool.submit(self._draw_portrait, message, ctx, prompt)
+        except RuntimeError:
+            ctx.logger.warning("画像线程池已关闭，这次不画图")
+
+    def _draw_portrait(self, message, ctx, prompt):
+        """在工作线程里画图并发送；发送被限流卡住时也不会拖住插件回调。"""
+        provider = self._image_provider(ctx)
+        if provider is None:
+            return
+        try:
+            data = provider.generate(prompt)
+        except Exception as error:
+            ctx.logger.warning("画像生成失败（%s）", type(error).__name__)
+            return
+        try:
+            self.portrait_directory.mkdir(parents=True, exist_ok=True)
+            path = self.portrait_directory / f"{uuid.uuid4().hex}.jpg"
+            path.write_bytes(data)
+        except OSError as error:
+            ctx.logger.warning("画像落盘失败（%s）", type(error).__name__)
+            return
+        try:
+            delivered = ctx.reply_image(message, path)
+        except Exception as error:
+            ctx.logger.warning("画像发送失败（%s）", type(error).__name__)
+            return
+        if delivered:
+            path.unlink(missing_ok=True)
+
+    def _image_provider(self, ctx):
+        if self.provider is not None:
+            return self.provider
+        provider = portrait.load_provider(self.project_root / "plugins/image_gen/provider.py",
+                                          self.project_root / self.image_config_file)
+        if provider is None:
+            ctx.logger.warning("画像：读不到生图配置 %s，这次只回文字", self.image_config_file)
+            return None
+        self.provider = provider
+        return provider
 
     def remember(self, message):
         """记住最近几张可用的图，只留路径和本地到达时间，不落库。"""

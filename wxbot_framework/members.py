@@ -103,6 +103,10 @@ class MemberStore:
         self.daily_clear = options.get("daily_clear", False)
         if type(self.daily_clear) is not bool:
             raise MemberError("daily_clear 必须是布尔值")
+        # 保留天数：daily_clear 关掉以后，旧日文本留多久。0 表示永久保留。
+        self.retention_days = options.get("retention_days", 0)
+        if type(self.retention_days) is not int or not 0 <= self.retention_days <= 365:
+            raise MemberError("retention_days 应为 0 到 365 的整数")
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._active_day = None
         self.groups = set(options["groups"])
@@ -269,16 +273,25 @@ class MemberStore:
             if day == self._active_day:
                 return False
             with self._connection() as db:
+                keep_from = self._keep_from(start)
                 for room in self.groups:
                     db.execute("""INSERT INTO chat_buffers(account,room,local_day) VALUES(?,?,?)
                         ON CONFLICT(account,room) DO UPDATE SET local_day=excluded.local_day,
                         generation=chat_buffers.generation+1 WHERE chat_buffers.local_day<>excluded.local_day""",
                                (self.account, room, day))
-                    if self.daily_clear:
+                    if keep_from:
                         db.execute("DELETE FROM messages WHERE account=? AND room=? AND received_at<?",
-                                   (self.account, room, start))
+                                   (self.account, room, keep_from))
             self._active_day = day
             return True
+
+    def _keep_from(self, start):
+        """跨天清理的截止时间：daily_clear 只留当天；否则按 retention_days 留几天；0 不清理。"""
+        if self.daily_clear:
+            return start
+        if self.retention_days:
+            return (datetime.fromisoformat(start) - timedelta(days=self.retention_days)).isoformat()
+        return None
 
     def clear(self, room):
         if room not in self.groups:
@@ -308,6 +321,25 @@ class MemberStore:
                 AND received_at>=? AND received_at<? AND bot_generated=0 ORDER BY id""",
                               (self.account, room, member.wxid, start, end)).fetchall()
             return ChatSnapshot(member, day, state[0], tuple(dict(row) for row in rows))
+
+    def member_messages(self, room, wxid, *, days=30, limit=60):
+        """某成员在本群最近 N 天的发言，新的在前；不含机器人自己的输出。"""
+        if room not in self.groups:
+            raise MemberError("这个群尚未启用聊天记录")
+        if not isinstance(wxid, str) or not wxid.strip():
+            raise MemberError("成员标识无效")
+        if type(days) is not int or not 1 <= days <= 365:
+            raise MemberError("days 应为 1 到 365 的整数")
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise MemberError("limit 应为 1 到 200 的整数")
+        since = (self._now().astimezone(BEIJING) - timedelta(days=days)).astimezone(timezone.utc).isoformat()
+        with self._lock:
+            self.rollover()
+            rows = self._connection().execute(
+                "SELECT text, received_at FROM messages WHERE account=? AND room=? AND sender_id=?"
+                " AND received_at>=? AND bot_generated=0 ORDER BY id DESC LIMIT ?",
+                (self.account, room, wxid, since, limit)).fetchall()
+        return [{"text": row["text"], "received_at": row["received_at"]} for row in rows]
 
     def today_group_snapshot(self, room):
         """完整读取本群今天所有成员的文本，未绑定者也保留身份区分。"""
