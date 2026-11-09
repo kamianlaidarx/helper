@@ -144,10 +144,12 @@ class Plugin:
         if not bullets:
             self._portrait_say(message, ctx, "我看了他这几句话，还想不好怎么说，换个人或者晚点再问？")
             return
-        body = "\n".join([f"{display} 给我的感觉是——", *bullets, portrait.DISCLAIMER])
-        self._portrait_say(message, ctx, body)
         if request.wants_image:
+            # 要图的时候只发图：群里再贴一段评价既啰嗦，也把"看画像"变成了念稿。
             self._queue_portrait(message, ctx, bullets, verdict.gender)
+        else:
+            body = "\n".join([f"{display} 给我的感觉是——", *bullets, portrait.DISCLAIMER])
+            self._portrait_say(message, ctx, body)
         ctx.logger.info("画像完成：room=%s lines=%d gender=%s image=%s", room, len(lines),
                         verdict.gender, request.wants_image)
 
@@ -191,11 +193,14 @@ class Plugin:
         """在工作线程里画图并发送；发送被限流卡住时也不会拖住插件回调。"""
         provider = self._image_provider(ctx)
         if provider is None:
+            # 要图的人等着的是一张图：画不出来就说一句，别让他对着空聊天框猜。
+            self._portrait_say(message, ctx, "我这边还画不了图，生图服务没配好。")
             return
         try:
             data = provider.generate(prompt)
         except Exception as error:
             ctx.logger.warning("画像生成失败（%s）", type(error).__name__)
+            self._portrait_say(message, ctx, "这张没画出来，过会儿再试一次？")
             return
         try:
             self.portrait_directory.mkdir(parents=True, exist_ok=True)
@@ -203,6 +208,7 @@ class Plugin:
             path.write_bytes(data)
         except OSError as error:
             ctx.logger.warning("画像落盘失败（%s）", type(error).__name__)
+            self._portrait_say(message, ctx, "这张没画出来，过会儿再试一次？")
             return
         try:
             delivered = ctx.reply_image(message, path)
@@ -218,7 +224,7 @@ class Plugin:
         provider = portrait.load_provider(self.project_root / "plugins/image_gen/provider.py",
                                           self.project_root / self.image_config_file)
         if provider is None:
-            ctx.logger.warning("画像：读不到生图配置 %s，这次只回文字", self.image_config_file)
+            ctx.logger.warning("画像：读不到生图配置 %s，这次画不了图", self.image_config_file)
             return None
         self.provider = provider
         return provider

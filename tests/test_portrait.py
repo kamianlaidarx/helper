@@ -311,11 +311,23 @@ class PluginTests(unittest.TestCase):
         self.assertIn(portrait.DISCLAIMER, ctx.sent[0])
         self.assertEqual(ctx.images, [])
 
-    def test_image_is_queued_only_when_asked(self):
+    def test_image_request_sends_only_the_picture(self):
+        ctx = FakeCtx()
+        with tempfile.TemporaryDirectory() as folder:
+            plugin = self.plugin(ctx)
+            plugin.portrait_directory = Path(folder)
+            plugin.provider = _FakeProvider(b"jpeg")
+            plugin.on_message(at_message("画一张 的画像"), ctx)
+        self.assertEqual(ctx.sent, [])  # 要图就只发图，不再贴一段评价
+        self.assertEqual(len(ctx.images), 1)
+
+    def test_image_request_without_provider_says_so(self):
         ctx = FakeCtx()
         self.plugin(ctx).on_message(at_message("画一张 的画像"), ctx)
         self.assertEqual(len(ctx.sent), 1)
-        self.assertEqual(ctx.images, [])  # 没有生图配置：只回文字，不报错
+        self.assertIn("画不了图", ctx.sent[0])
+        self.assertNotIn("给我的感觉是", ctx.sent[0])
+        self.assertEqual(ctx.images, [])
 
     def test_member_without_history_gets_a_soft_reply(self):
         ctx = FakeCtx(rows=[])
@@ -354,6 +366,7 @@ class PluginTests(unittest.TestCase):
         plugin._draw_portrait = lambda message, ctx, prompt: prompts.append(prompt)
         plugin.on_message(at_message("画一张 的画像"), ctx)
         self.assertEqual(len(prompts), 1)
+        self.assertEqual(ctx.sent, [])  # 画像不带评价正文
         self.assertIn("女性", prompts[0])
         self.assertNotIn("男性", prompts[0])
 
@@ -363,6 +376,16 @@ class PluginTests(unittest.TestCase):
         plugin.portraits[ROOM] = (_today(), portrait.IMAGE_PER_DAY)
         plugin._queue_portrait(at_message("画像"), ctx, ["说话直接"])
         self.assertIn("今天已经画过", ctx.sent[0])
+
+
+class _FakeProvider:
+    """只要一个 generate 方法：真 provider 会去读配置、打外部接口，测试里不需要。"""
+
+    def __init__(self, data):
+        self.data = data
+
+    def generate(self, prompt):
+        return self.data
 
 
 class _InlinePool:
