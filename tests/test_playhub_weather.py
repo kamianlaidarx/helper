@@ -350,7 +350,9 @@ class WeatherEngineTests(unittest.TestCase):
         self.assertEqual(reply.action, "outbound.weather")
         self.assertIn("城市：成都", reply.text)
         self.assertIn("今天 多云 12~20℃", reply.text)
-        self.assertIn("数据来源：stub", reply.text)
+        # 结果卡只给城市与三天预报：数据来源、缓存时长属后台事实（§4.5 第 8 条）
+        for leaked in ("数据来源", "缓存", "stub", "qweather"):
+            self.assertNotIn(leaked, reply.text)
 
     def test_result_is_cached_for_ten_minutes(self) -> None:
         self.say("天气 成都")

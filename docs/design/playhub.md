@@ -1646,7 +1646,7 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 | 活跃榜（第 4 批落地口径） | 默认**本周**（`DEFAULT_PERIOD="week"`），参数词 `日/今日/今天`、`周/本周/这周`、`月/本月/这个月`、`总/总榜/全部`；区间由 `clock.range_of()` 算，**上界一律取「今天」**而不是周末/月末（未来没有数据，少扫空区间）；周的起点是 `today - timedelta(days=today.weekday())`（周一）；单位是「条」= `activity_daily.messages` 求和，同一句只记一次（命令消息不记） |
 | 潜水（第 4 批落地口径） | 天数默认 7、上限 90；判据是 `activity_daily.last_at` 距今天数 ≥ 天数；读的是 `member_seen` 的昵称快照；**只统计、不清人**（框架无踢人能力，`:1743` 的软禁言同理） |
 | 邀请（第 4 批落地口径） | 窗口 `[day_of(now - days*86400), day_of(now)]`，默认 7 天、上限 90；按人榜读 `invite_credit`，群级读 `invite_daily`；**同一个 invitee 对同一个 inviter 终身只算 1 次**（`invite_credit` 主键 `(room, inviter, invitee, day)`，跨天去重在查询侧做）。邀请人来自框架 `GroupMemberEvent.actor_id`（C1 已落地，见 §8.7）；`source == "membership"` 的名单差分补录**不产生归属**（`core/invite.py`）。计数口径：凡带成员 ID 的 join/leave 进 `invite_daily`，按 `evt:<room>:<kind>:<uid>:<day>` 幂等去重，重投的系统消息不会把人数记两遍。卡面措辞：有归属时「🚪 入群 N 次 · 邀请入群 N 次」，只有群级时「群级共 N 次邀请入群」，一条记录都没有时「📨 近 N 天没有入群记录」+「ℹ 邀请榜靠框架的入群事件，缺事件时这里就是空的」 |
-| 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**默认开**（kv 读不到 = 开），管理员发 `改名 关` 关闭；后台每天巡检一次并播报（§4.2.4 ①）；`现在` 走 `ctx.group_members(room)` 快照与改名基线 `groupstat.rename_snapshot` 比对（§4.2.4 ①，不再用 `member_seen`），快照返回 `None`（缓存未就绪）时明说「读不到群成员快照」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
+| 改名（第 4 批落地口径） | `改名 开 / 关 / 现在`；开关存 `kv` 的 `groupstat.rename_watch`（`"1"`/`"0"`），**默认开**（kv 读不到 = 开），管理员发 `改名 关` 关闭；后台每天巡检一次并播报（§4.2.4 ①）；`现在` 走 `ctx.group_members(room)` 快照与改名基线 `groupstat.rename_snapshot` 比对（§4.2.4 ①，不再用 `member_seen`），快照返回 `None`（缓存未就绪）时明说「暂时读不到群成员名单，过一会儿再发一次」，**不把 None 当空列表**；变化写 `nickname_log` 并回「发现 N 处改名」 |
 | 小黑屋（第 4 批落地口径） | 软禁言：被关期间**在 `route()` 之前**就返回静默（连「黑名单 列」也不回，§8.2）；单次上限 **60 分钟**、每日上限 **10 次**（`daily_counter` 键 `jail_set`）；`jail.until` 到期由任意 `小黑屋` 子命令惰性清理（**维持惰性，不做定时巡检**，2026-11-06 定）；`小黑屋 10` 这种缺目标形态直接拒绝（`target.isdigit() and not extra`）；列表卡标题带人数 |
 | 黑名单（第 4 批落地口径） | `scope='play'`，只在本插件内生效；被拉黑者与小黑屋同等待遇（`route()` 之前静默）；`加/删/列` 里 `列` 不需权限，`加/删` 需 owner/admin；`加` 用 `ON CONFLICT(room,uid,scope) DO UPDATE` 幂等，`删` 只删 `scope='play'` |
 | 门禁的两种失败方向（第 4 批落地口径） | **权限判定失败关闭**（`MemberFeed.role` 返回 `unknown` / 抛异常 → `permissions.gate` 拒绝，记 `audit.result='denied'`）；**静默判定失败开放**（`_muted()` 读库异常按「不在小黑屋/黑名单」，否则库一抖全群静音）。两者方向相反是有意的，写测试时不要统一 |
@@ -1698,6 +1698,12 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
    用户看到「天气服务暂时连不上 / 过一会儿再试」就够；告诉他去改哪个 key，既没用又像机器人坏了。
    对应断言：`tests/test_playhub_batch3.py::OutboundWeatherTests::test_offline_says_not_connected`
    与 `LoungeChatTests::test_chat_says_not_connected` 会对上述关键词逐个 `assertNotIn`。
+   实测漏进去过的三类（2026-11-09 第二轮回溯）：`数据来源：qweather，缓存 10 分钟`（天气结果卡
+   的后台事实，已整行删除，只留城市 + 三天预报）、`内容出自本地文案库（content/playhub/almanac.jsonl）`
+   （黄历，改为「按日期轮转，同一天全群看到的是同一份」）、`读不到群成员快照（框架缓存未就绪）`
+   （改名，改为「暂时读不到群成员名单，过一会儿再发一次」）。
+   反之**不算**运维信息、该说就说：统计口径（「按群消息条数，同一句只算一次」）、时效
+   （「同一城市 10 分钟内复用」可改写成用户语言）、只读声明（「只统计、不清理任何人」）。
    已知限制照旧要说（「不发音频」「不会真的禁言」），那是**用户能感知的边界**，不是运维信息。
 
 **裸发规则（`app.handle_message`）**

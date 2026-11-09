@@ -343,7 +343,10 @@ class RenameTests(Batch4Base):
 
     def test_scan_without_snapshot(self):
         reply = self.say("改名 现在")               # FakeCtx 默认 members=None
-        self.assertIn("读不到群成员快照", reply.text)
+        self.assertIn("读不到群成员名单", reply.text)
+        # 前台话术：不出现「快照」「缓存」这类框架内部说法（§4.5 第 8 条）
+        for leaked in ("快照", "缓存", "框架"):
+            self.assertNotIn(leaked, reply.text)
 
     def test_bad_sub(self):
         self.assertIn("只认", self.say("改名 关掉").text)

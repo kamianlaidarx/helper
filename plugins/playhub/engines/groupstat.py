@@ -303,7 +303,7 @@ class GroupStatEngine:
         rows = self._member_rows(ctx, room)
         if rows is None:
             return Reply(
-                render.tip("⚠", "读不到群成员快照（框架缓存未就绪），过一会儿再试"),
+                render.tip("⚠", "暂时读不到群成员名单，过一会儿再发一次"),
                 "groupstat.rename",
             )
         store = store_of(game)

@@ -654,7 +654,7 @@ class DailyEngine:
         return Reply(
             render.menu(
                 "📅", f"黄历 {when}", body,
-                note_text="内容出自本地文案库（content/playhub/almanac.jsonl），按日轮转，不接真实历法",
+                note_text="按日期轮转，同一天全群看到的是同一份；不接真实历法",
             ),
             "daily.almanac",
         )

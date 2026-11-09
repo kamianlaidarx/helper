@@ -160,12 +160,11 @@ class OutboundEngine:
         )
 
     def _card(self, nickname: str, weather: Weather) -> str:
+        # 只给城市和三天的预报。`source`（qweather/offline）与 10 分钟缓存都是后台事实，
+        # 对群里的人没有信息量——按 §4.5 第 8 条不进卡面（要排查去看日志）。
         rows = [render.row("📍 ", f"城市：{weather.city}")]
         rows.extend(render.row("├ ", day) for day in weather.days[:3])
-        return render.menu(
-            "🌤", "天气", rows,
-            note_text=f"数据来源：{weather.source}，缓存 10 分钟",
-        )
+        return render.menu("🌤", "天气", rows)
 
     def _offline_card(self, nickname: str, city: str) -> str:
         # 前台文案：只说「现在查不了」。
