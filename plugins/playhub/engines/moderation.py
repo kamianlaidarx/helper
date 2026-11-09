@@ -144,7 +144,7 @@ class ModerationEngine:
                     render.row("⏳ ", f"到 {minutes} 分钟后自动解除"),
                     render.row("🔁 ", f"今天还能关：{max(0, JAIL_DAILY_CAP - used - 1)} 次"),
                 ],
-                tail="ℹ 只在本插件内生效，不会真的禁言或踢人",
+                tail="ℹ 只是我的玩法不理他，不会真的禁言或踢人",
             ),
             "moderation.jail",
         )
@@ -261,7 +261,7 @@ class ModerationEngine:
             render.result(
                 msg_nickname(msg, ctx),
                 headline,
-                [render.row("🎮 ", "只在本插件内生效，不影响他正常聊天")],
+                [render.row("🎮 ", "只是我的玩法不理他，不影响他正常聊天")],
             ),
             "moderation.block",
         )

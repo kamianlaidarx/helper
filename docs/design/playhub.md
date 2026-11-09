@@ -1691,6 +1691,14 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
    `HelpTextTest::test_fits_in_one_message` 按字节卡死
    （上限常量 `app.HELP_MAX_BYTES = 1023`）。压缩手段是只留关键词、删解释，
    不是调大阈值——阈值是框架的分片契约，不归插件改。
+8. **卡面只给前台用户看的东西，不放运维信息**（2026-11-09 用户要求）：配置文件路径
+   （`bot_config.json`）、配置键（`weather_provider` / `weather_api_key`）、源码文件路径
+   （`adapters/outbound.py`）、设计章节号（`§9`）、插件名与「停用插件」这类后台动作，
+   一律**不得**出现在群聊卡面里——它们只属于本文档、`playhub-smoke.md` 和日志。
+   用户看到「天气服务暂时连不上 / 过一会儿再试」就够；告诉他去改哪个 key，既没用又像机器人坏了。
+   对应断言：`tests/test_playhub_batch3.py::OutboundWeatherTests::test_offline_says_not_connected`
+   与 `LoungeChatTests::test_chat_says_not_connected` 会对上述关键词逐个 `assertNotIn`。
+   已知限制照旧要说（「不发音频」「不会真的禁言」），那是**用户能感知的边界**，不是运维信息。
 
 **裸发规则（`app.handle_message`）**
 
@@ -1941,7 +1949,7 @@ def resolve_workspace(ctx, msg) -> Path:
   - `plugins/playhub/engines/lounge.py`：`文案`（主题轮转 + `kv` 游标，带 `@昵称` 回包）、`群空间`（整点缓存 1 小时的只读聚合）、`聊天`（只回说明卡，**不假装会聊**）。**踩坑**：`space()` 曾在只读事务里再开写事务，报 `cannot start a transaction within a transaction`；改成出事务后单独写缓存。
   - `plugins/playhub/engines/duel.py`：`切磋 @对象` → `同意`/`拒绝`，10 分钟过期，胜率 50%，只记战绩不碰钱包（文档明确「不联动监狱/医院」）。
   - `plugins/playhub/engines/music.py`：`点歌` 只登记队列（上限 5）与排位，每人 30 秒冷却，**不发音频**（音源 §9 未定）。
-  - `plugins/playhub/engines/outbound.py` + `adapters/outbound.py`：`WeatherProvider` 协议 + 离线默认实现，`天气 城市` 在没接服务时明说「天气服务还没配置」，不编数据。**2026-11-06 接上和风天气**：`QWeatherProvider`（两跳：`geo/v2/city/lookup` → `v7/weather/3d`）、`build_provider(config)` 失败关闭、3 s 超时、64 KiB 响应上限、连续 3 次失败熔断 5 分钟；`App(config=…)` → `build_engines(config=…)` → provider 一条线传下来。
+  - `plugins/playhub/engines/outbound.py` + `adapters/outbound.py`：`WeatherProvider` 协议 + 离线默认实现，`天气 城市` 在没接服务时明说「天气服务暂时连不上」，不编数据（配置方式只写在文档里，不进群聊，见 §4.5 第 8 条）。**2026-11-06 接上和风天气**：`QWeatherProvider`（两跳：`geo/v2/city/lookup` → `v7/weather/3d`）、`build_provider(config)` 失败关闭、3 s 超时、64 KiB 响应上限、连续 3 次失败熔断 5 分钟；`App(config=…)` → `build_engines(config=…)` → provider 一条线传下来。
   - `plugins/playhub/engines/daily.py`：`黄历`（`明天`/`昨天` 偏移、按日轮转）、`星座`（不给星座按哈希推定、四项指数 + 幸运数字/颜色）、`求财神`（固定 +20 金币、一日一次），文案库 `content/playhub/{almanac,horoscope,wealth}.jsonl` 各 24 条。
   - 签到现在发箱：每日铜箱 1 个、连签第 7 天额外金箱 1 个（`items.add` 写 `inventory`）。
   - 测试：`tests/test_playhub_lottery.py`（20 例）、`tests/test_playhub_batch3.py`（23 例）、`tests/test_playhub_weather.py`（26 例：两跳解析/LocationID 缓存/缺口截断/各类失败吞成 `None`/熔断四条/装配与引擎缓存）；2026-11-06 实测 `pytest -k "playhub or idiom_chain"` → **554 passed / 570 subtests**，`main.py --check` 通过。
@@ -2043,7 +2051,7 @@ def resolve_workspace(ctx, msg) -> Path:
 
 | 接口 | 风险 | 缓解 |
 |---|---|---|
-| 天气 API | **2026-11-06 已选型并落地：和风天气 QWeather v7**（免费订阅 1000 次/天，key 走账号专属 API Host `*.re.qweatherapi.com`）。剩余风险：key 泄漏、额度耗尽、`weather_api_host` 漏填（旧公共域名对新 key 一律 404/403） | `adapters/outbound` 定义 `WeatherProvider` 协议，默认实现为离线占位（`OfflineProvider` 返回 `None`，卡面写「天气服务还没配置」）；**配了 key 才启用**；3 s 超时（`0 < t ≤ 10`）+ **熔断（连续 3 次失败停 5 min）**；响应体上限 64 KiB（含 gzip 解压后）；城市名解析结果进程内缓存，热路径只一跳；失败一律返回 `None`，引擎只回「服务不可用」，不编数据 |
+| 天气 API | **2026-11-06 已选型并落地：和风天气 QWeather v7**（免费订阅 1000 次/天，key 走账号专属 API Host `*.re.qweatherapi.com`）。剩余风险：key 泄漏、额度耗尽、`weather_api_host` 漏填（旧公共域名对新 key 一律 404/403） | `adapters/outbound` 定义 `WeatherProvider` 协议，默认实现为离线占位（`OfflineProvider` 返回 `None`，卡面写「天气服务暂时连不上 / 过一会儿再发一次试试」）；**配了 key 才启用**；3 s 超时（`0 < t ≤ 10`）+ **熔断（连续 3 次失败停 5 min）**；响应体上限 64 KiB（含 gzip 解压后）；城市名解析结果进程内缓存，热路径只一跳；失败一律返回 `None`，引擎只回「服务不可用」，不编数据 |
 | 点歌音源 | 音源合法性、音乐版权、大文件发送 | 默认只回文字"已点：《歌名》- 歌手"，不发音频文件；`file.send` 能力存在且框架已取消 20 MiB 上限（`docs/messages/files.md:24`），但**音源授权未解决前不启用音频** |
 | LLM（文案馆/智能聊天） | 成本、超时、串行阻塞 | 文案馆默认走本地库；LLM 为可选开关，且必须走执行器 + 3 s 超时 + 失败降级 |
 | 内容源（星座/黄历） | 无需外部，全部本地化 | 黄历用本地宜忌词表 + 日期确定性抽取（同一日期所有人结果一致），不请求第三方 |
@@ -2070,7 +2078,7 @@ def resolve_workspace(ctx, msg) -> Path:
 7. **两个看图猜成语插件共用 4 个裸词**（`提示`/`换一题`/`公布答案`/`退出猜成语`）：两边都有未结束对局时会被各回一次，跨插件状态不可见（§2.7 冲突 2/3）。—— 自 2026-11-05 起由 `wxbot_framework/game_slot.py` 的共享槽消除：一个群同时只允许一局，后开的一律被拒（见 §2.7 冲突 3）。
 8. **游戏槽只在本进程内存**：`wxbot_framework/game_slot.py` 的 `room → 占用者` 表随机器人重启清空、不跨进程。当前插件回调单线程串行，够用；将来若多进程分流，必须改成落盘或 IPC。
 9. **天气已异步化，但仍有一处延迟是设计代价**（`adapters/outbound.QWeatherProvider` + `adapters/executor.py`，2026-11-06 落地）：两跳 HTTP（城市名 → LocationID、LocationID → 预报）跑在 worker，回调线程立刻返回、**不回「正在查」**，结果由 worker 直接发一张卡。三条残留：①**队列满或没有执行器时退化成同步**，那时最坏阻塞 `2 × weather_timeout_seconds`（默认 ≤6 s）——宁可慢也不丢查询；②**缓存落库延迟到下一条消息**（worker 不碰 `Store`，写缓存 `defer` → `App._flush()`），所以「刚查完立刻再问一次」可能还没命中缓存，多花一次额度；③**线程无法中断**，`timeout` 只记录超时警告，真正的超时来自 transport。**另外一个坑**：`urllib` 会读环境里的 `ALL_PROXY`/`HTTP_PROXY`，若指向一个不可用的代理，天气会一直「服务不可用」且 3 次后熔断 5 分钟（开发机就是这个状态，2026-11-06 实测）；排查时先清代理再测。
-10. **`聊天 开/关` 不存在**（2026-11-06 核实）：`plugins/mention_chat/plugin.json` 没有开关字段，`mention_chat/__init__.py:24-25` 只在启动读 `members.history_enabled`。要关只能停用插件；playhub 的 `聊天` 卡面已写明「那个通道归框架插件 mention_chat 管，本群没有开关」。
+10. **`聊天 开/关` 不存在**（2026-11-06 核实）：`plugins/mention_chat/plugin.json` 没有开关字段，`mention_chat/__init__.py:24-25` 只在启动读 `members.history_enabled`。要关只能停用插件。playhub 的 `聊天` 卡面**不提这件事**（插件名与「停用插件」属运维信息，2026-11-09 起按 §4.5 第 8 条从前台撤下），只写「聊天模型还没接上，我现在主要陪你玩小游戏 / 想说话就直接 @我，我尽量接」。
 
 ### 8.7 邀请人修复（C1：改框架五处）
 
@@ -2122,7 +2130,7 @@ def resolve_workspace(ctx, msg) -> Path:
 4. **冲突处置粒度**：本设计是「`strict=True` 整插件拒绝加载（测试/首装）、`strict=False` 只按引擎禁用（运行期）」；你原话是"拒绝加载该插件"。是否接受运行期"只损失 1 个玩法"而不是"47 项全下线"？
 5. **`picture_idiom` 与 playhub quiz 共用 4 个框架裸词**：接受「同一群二选一」（本设计默认，帮助文案说明），还是要求 playhub 必须换一套自己的子命令词（会增加 4 个新词，且与框架词并存时行为更难解释）？
 6. **高危裸触发要"完全静默"还是"首次回一次引导"**：本设计是静默（`silent`），中危用"24 h 一次引导"（`guide`）。完全静默的代价是新人不知道有这个玩法；改成"每群首次一次引导"可以让发现成本降低，但会让「宝宝」这种词在群里冒出一条机器回复（正是我们想避免的）。
-7. **`聊天 开/关` 是否真的能生效** —— **已核实（2026-11-06）：不能**。`plugins/mention_chat/plugin.json` 只有 `api`/`description`/`message_types`/`requires`/`business` 五个字段，没有开关；`plugins/mention_chat/__init__.py:24-25` 只在启动时读框架的 `members.history_enabled`（为假直接 `ValueError`），不接受群级 kv。即：**@ 就答，群内关不掉**。处理：`聊天` 保持只回说明，并在卡面里明说「那个通道归框架插件 mention_chat 管，本群没有开关：@ 了就答，要关只能停用插件」（`plugins/playhub/engines/lounge.py`）。要在群内开关必须改 `mention_chat` 去读 kv，属框架插件改动，暂不做。
+7. **`聊天 开/关` 是否真的能生效** —— **已核实（2026-11-06）：不能**。`plugins/mention_chat/plugin.json` 只有 `api`/`description`/`message_types`/`requires`/`business` 五个字段，没有开关；`plugins/mention_chat/__init__.py:24-25` 只在启动时读框架的 `members.history_enabled`（为假直接 `ValueError`），不接受群级 kv。即：**@ 就答，群内关不掉**。处理：`聊天` 保持只回说明；卡面**不写**插件名与「停用插件」（2026-11-09 起按 §4.5 第 8 条撤下运维信息），只写「聊天模型还没接上，我现在主要陪你玩小游戏 / 想说话就直接 @我，我尽量接」（`plugins/playhub/engines/lounge.py`）。要在群内开关必须改 `mention_chat` 去读 kv，属框架插件改动，暂不做。
 8. **「群空间」控制台页面**是否纳入范围？纳入要改 `wxbot_framework/panel_http.py`（硬编码路由，`:87-234`）+ `webui/app.js`，属框架改动、需单独排期；不纳入则第 4 批只交付群内文本卡片。
 9. **纳妾门槛的数值口径（已定 30 钻石）**：全文统一为 **30 钻石**（非扣款，仅余额校验），与 §4.4 数值表一致。原 `300 钻石` 是官方在可充值环境下的定价，本群无充值渠道、钻石产出约 5.5 钻/周，300 钻≈11 个月等于死内容，故等比缩放为 30 钻（≈6 周）。v1 纳妾默认永久关闭且无扣款入口，此值仅在开启该玩法后才生效。
 
@@ -2137,7 +2145,7 @@ def resolve_workspace(ctx, msg) -> Path:
 | 3 | 抽签 | **数值已定（§4.4）**：每日 1 次；五档 1/12、2/12、4/12、3/12、2/12；金币 30/20/12/8/5；上上签额外 +3 钻石 |
 | 4 | 黄历 | 用本地确定性口径还是指定来源；日期与个人化规则（是否按用户八字/生肖） |
 | 5 | 礼物 | 目录由谁定义；价格；库存制还是永久；是否转移价值；收礼方是否有收益 |
-| 6 | 天气 | **已定（2026-11-06）**：服务商 = 和风天气 QWeather v7（免费订阅 1000 次/天）；默认城市 = **无**（强制带城市参数，不按 IP 猜）；地点解析 = `geo/v2/city/lookup` 取 LocationID（进程内缓存）；额度 = 免费额度内，10 分钟结果缓存 + 5 分钟熔断兜底；失败文案 = 「天气服务暂时不可用」/ 未配置时「天气服务还没配置」。key 由用户在 `bot_config.json → plugins.playhub.weather_api_key` 填 |
+| 6 | 天气 | **已定（2026-11-06）**：服务商 = 和风天气 QWeather v7（免费订阅 1000 次/天）；默认城市 = **无**（强制带城市参数，不按 IP 猜）；地点解析 = `geo/v2/city/lookup` 取 LocationID（进程内缓存）；额度 = 免费额度内，10 分钟结果缓存 + 5 分钟熔断兜底；失败文案 = 「天气服务暂时连不上」/「过一会儿再发一次试试」（**不含**配置项与文件名，见 §4.5 第 8 条）。key 由用户在 `bot_config.json → plugins.playhub.weather_api_key` 填 |
 | 7 | 星座 | 查询语法；内容源；更新周期；是否个人化 |
 | 8 | 求财神 | 次数；费用；奖励；是否只出文案 |
 | 9 | 小黑屋 | **部分已定（§8.2）**：单次上限 60 分钟、每日上限 10 次、到期自动解除、`小黑屋 解除 @某人`、只做插件内软限制不联动框架。剩余：对哪些功能生效（建议：仅 playhub 自有玩法，不拦聊天） |

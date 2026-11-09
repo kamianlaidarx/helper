@@ -192,15 +192,14 @@ class LoungeEngine:
                 "lounge.chat",
             )
         body = [
-            render.row("🤖 ", "智能聊天还没接上（要单独配一家模型服务）"),
-            render.row("🎮 ", "现在能陪你的：13 类猜题、成语接龙、看图猜成语"),
-            render.row("💬 ", "想聊天就先 @我 直接说话，走的是另一个通道"),
-            render.row("🔌 ", "那个通道归框架插件 mention_chat 管，本群没有开关：@ 了就答，要关只能停用插件"),
+            render.row("🤖 ", "聊天模型还没接上，我现在主要陪你玩小游戏"),
+            render.row("🎮 ", "能玩的：13 类猜题、成语接龙、看图猜成语"),
+            render.row("💬 ", "想说话就直接 @我，我尽量接"),
         ]
         return Reply(
             render.menu(
                 "🤖", "智能聊天", body,
-                note_text="§9 待定：LLM 服务未选型，选好之前这里只回说明，不假装会聊",
+                note_text="聊天能力开通后我会告诉你；先玩着",
             ),
             "lounge.chat",
         )

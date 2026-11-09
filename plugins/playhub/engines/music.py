@@ -87,7 +87,7 @@ class MusicEngine:
         return Reply(
             render.menu(
                 "🎵", "点歌", body,
-                note_text="音源还没接（§9 待定），现在只登记与报位，不发音频",
+                note_text="曲库还没接上，现在只登记与报位，暂时不发音频",
                 tail="💡 队列最多 5 首，机器人重启会清空",
             ),
             "music.request",

@@ -168,13 +168,15 @@ class OutboundEngine:
         )
 
     def _offline_card(self, nickname: str, city: str) -> str:
+        # 前台文案：只说「现在查不了」。
+        # 配置方式（bot_config.json → plugins.playhub、qweather、key）属运维信息，
+        # 写进文档与日志即可——在群聊里贴配置项等于把后台细节暴露给所有人。
         rows = [
             render.row("📍 ", f"城市：{city}"),
-            render.row("🔌 ", "天气服务还没配置（bot_config.json → plugins.playhub）"),
-            render.row("📝 ", "配置好以后这里会显示未来三天的天气"),
+            render.row("🔌 ", "天气服务暂时连不上"),
+            render.row("⏳ ", "过一会儿再发一次试试"),
         ]
         return render.menu(
             "🌤", "天气", rows,
-            note_text="现在不编数据：宁可说接不上，也不给你一个假预报",
-            tail="💡 要开的话填 weather_provider=qweather 与 weather_api_key，见 adapters/outbound.py",
+            note_text="查不到就不给预报，免得误导",
         )

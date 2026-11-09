@@ -376,7 +376,8 @@ class WeatherEngineTests(unittest.TestCase):
             engines={"outbound": OutboundEngine(provider=OfflineProvider(), now_fn=self.clock)},
         )
         text = app.handle_message(self.ctx, FakeMsg("天气 成都")).text
-        self.assertIn("天气服务还没配置", text)
+        self.assertIn("天气服务暂时连不上", text)
+        self.assertNotIn("bot_config", text)
         with self.store.tx(immediate=False) as conn:
             rows = conn.execute("SELECT COUNT(*) FROM kv WHERE key LIKE 'weather:%'").fetchone()[0]
         self.assertEqual(rows, 0, "接不上时不缓存，免得一次抖动把城市锁十分钟")
@@ -508,7 +509,7 @@ class AsyncWeatherTests(unittest.TestCase):
         )
         with self.assertLogs("playhub.outbound", level="ERROR"):
             reply = app.handle_message(self.ctx, FakeMsg("天气 成都"))
-        self.assertIn("天气服务还没配置", reply.text)
+        self.assertIn("天气服务暂时连不上", reply.text)
         self.assertEqual(broken.calls, 1)
 
     def test_cache_write_is_silent_when_store_is_closed(self) -> None:

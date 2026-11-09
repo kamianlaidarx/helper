@@ -162,12 +162,14 @@ class LoungeSpaceTests(Base):
 class LoungeChatTests(Base):
     def test_bare_chat_returns_menu_card(self) -> None:
         """裸发「聊天」回说明书；带参数才进引擎。"""
-        self.assertIn("智能聊天要单独配一家模型服务", self.say("聊天"))
+        self.assertIn("聊天模型还在开通中", self.say("聊天"))
 
     def test_chat_says_not_connected(self) -> None:
         text = self.say("聊天 今天好累")
-        self.assertIn("智能聊天还没接上", text)
-        self.assertIn("不假装会聊", text)
+        self.assertIn("聊天模型还没接上", text)
+        # 说明卡也不许提插件名/停用插件这类后台动作
+        for leaked in ("mention_chat", "停用插件", "§"):
+            self.assertNotIn(leaked, text)
 
 
 class DuelTests(Base):
@@ -241,8 +243,10 @@ class MusicTests(Base):
 class OutboundWeatherTests(Base):
     def test_offline_says_not_connected(self) -> None:
         text = self.say("天气 成都")
-        self.assertIn("天气服务还没配置", text)
-        self.assertIn("不编", text.replace("绝不编", "不编"))
+        self.assertIn("天气服务暂时连不上", text)
+        # 前台卡面不许出现配置项、文件名、代码路径（用户 2026-11-09 要求）
+        for leaked in ("bot_config", "weather_api_key", "plugins.playhub", "adapters/", "§"):
+            self.assertNotIn(leaked, text)
 
     def test_bare_weather_returns_card(self) -> None:
         text = self.say("天气")
@@ -251,7 +255,7 @@ class OutboundWeatherTests(Base):
     def test_switch_does_not_gate_weather(self) -> None:
         with self.store.tx() as conn:
             kv.put(conn, ROOM, switches.kv_key(switches.MARRIAGE), "off", self.clock())
-        self.assertIn("天气服务还没配置", self.say("天气 成都"))
+        self.assertIn("天气服务暂时连不上", self.say("天气 成都"))
 
 
 if __name__ == "__main__":

@@ -457,7 +457,8 @@ class BlockTests(Batch4Base):
         # 裸发走触发卡（app 层），不是引擎的 USAGE_BLOCK
         reply = self.say("黑名单")
         self.assertIn("黑名单 加 @对象", reply.text)
-        self.assertIn("只在本插件内生效", reply.text)
+        self.assertIn("只是不理他的游戏命令", reply.text)
+        self.assertNotIn("插件", reply.text)
 
     def test_self_target_rejected(self):
         self.assertIn("不能把自己", self.say(f"黑名单 加 {NAME_A}").text)
