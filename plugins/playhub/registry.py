@@ -1,8 +1,8 @@
 """playhub 动作绑定表 + 加载期自检 + dispatch（`docs/design/playhub.md:578`、`§7 第 1 批`）。
 
-第 2 批把 13 个竞猜动作全部绑到 `quiz` 引擎：
-`quiz.chengyu` / `song` / `riddle` / `movie` / `star` / `animal` / `plant` / `food`
-/ `honor` / `anime` / `guoman` / `diff` / `trivia`。
+第 2 批把竞猜动作绑到 `quiz` 引擎（2026-11-13 删掉 `chengyu` / `star` / `animal` /
+`plant` / `trivia` 五类，文字猜题改由看图玩法承担）：
+`quiz.song` / `riddle` / `movie` / `food` / `honor` / `anime` / `guoman` / `diff`。
 第 3 批起接四个引擎：
 - `social`：婚姻 + 闺蜜/结拜/雇佣/纳妾 + 关系卡/配对/礼物/宝宝（共用 `pair`/`baby`）；
 - `lottery`：盲盒与开宝箱（物品来源，`core/items.py` 的掉落表与箱型）；
@@ -51,20 +51,16 @@ BINDINGS: dict[str, Binding] = {
     "ranking.top": Binding("ranking.top", "ranking", 1),
     # 帮助：不经引擎，由 app 直接回包（见 app.HELP_TEXT）。
     "business.help": Binding("business.help", "business", 1),
-    # 第 2 批：13 个类目共用一个 quiz 引擎、一张 quiz_round 表。
-    "quiz.chengyu": Binding("quiz.chengyu", "quiz", 2),
+    # 第 2 批：文字猜题共用一个 quiz 引擎、一张 quiz_round 表。
+    # 2026-11-13 删除 `quiz.chengyu` / `quiz.star` / `quiz.animal` / `quiz.plant` / `quiz.trivia`。
     "quiz.song": Binding("quiz.song", "quiz", 2),
     "quiz.riddle": Binding("quiz.riddle", "quiz", 2),
     "quiz.movie": Binding("quiz.movie", "quiz", 2),
-    "quiz.star": Binding("quiz.star", "quiz", 2),
-    "quiz.animal": Binding("quiz.animal", "quiz", 2),
-    "quiz.plant": Binding("quiz.plant", "quiz", 2),
     "quiz.food": Binding("quiz.food", "quiz", 2),
     "quiz.honor": Binding("quiz.honor", "quiz", 2),
     "quiz.anime": Binding("quiz.anime", "quiz", 2),
     "quiz.guoman": Binding("quiz.guoman", "quiz", 2),
     "quiz.diff": Binding("quiz.diff", "quiz", 2),
-    "quiz.trivia": Binding("quiz.trivia", "quiz", 2),
     # 第 3 批：社交段（婚姻 + 闺蜜/结拜/雇佣/纳妾，共用 pair 状态机）。
     "social.marry": Binding("social.marry", "social", 3),
     "social.sister": Binding("social.sister", "social", 3),
@@ -126,13 +122,9 @@ ACTION_PLAN: dict[str, int | None] = {
     "lottery.blindbox": 3,
     "lounge.copy": 3,
     "ranking.activity": 4,
-    "quiz.chengyu": 2,
     "quiz.song": 2,
     "quiz.riddle": 2,
     "quiz.movie": 2,
-    "quiz.star": 2,
-    "quiz.animal": 2,
-    "quiz.plant": 2,
     "quiz.food": 2,
     "quiz.honor": 2,
     "quiz.anime": 2,
@@ -144,7 +136,6 @@ ACTION_PLAN: dict[str, int | None] = {
     "lottery.chest": 3,
     "lounge.space": 3,
     "quiz.diff": 2,
-    "quiz.trivia": 2,
     "groupstat.dive": 4,
     "groupstat.invite": 4,
     "groupstat.rename": 4,

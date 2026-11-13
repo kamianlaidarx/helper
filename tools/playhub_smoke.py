@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""playhub 离线冒烟：不连微信、不碰线上库，把 62 个触发词和 50 条闲聊各跑一遍。
+"""playhub 离线冒烟：不连微信、不碰线上库，把 57 个触发词和 50 条闲聊各跑一遍。
 
 做什么
 ------
 1. 在临时目录建一个全新的 SQLite（`Store(..., account="smoke")` + `migrate()`）；
 2. 从代码的触发词注册表 `plugins/playhub/keywords.py` 的 `TABLE` **程序化**取出全部
-   触发词（不手抄），断言数量就是 `KEYWORD_COUNT`（62）；
+   触发词（不手抄），断言数量就是 `KEYWORD_COUNT`（57）；
 3. 每个触发词裸发一次，记录：有没有回包、有没有抛异常、有没有落到 `ERROR_TEXT`；
 4. 换一个全新房间发 50 条内置闲聊（脚本自带样本，且脚本会自检它们不含任何触发词），
    要求零回包——群里的日常聊天不该被插件接话；
@@ -195,8 +195,8 @@ def run_smoke(*, verbose: bool = False) -> Report:
         report.problems.append(
             f"触发词数量不符：注册表有 {len(keywords)} 个，KEYWORD_COUNT 声明 {kw_mod.KEYWORD_COUNT}"
         )
-    if kw_mod.KEYWORD_COUNT != 62:
-        report.problems.append(f"KEYWORD_COUNT 应为 62，实际 {kw_mod.KEYWORD_COUNT}")
+    if kw_mod.KEYWORD_COUNT != 57:
+        report.problems.append(f"KEYWORD_COUNT 应为 57，实际 {kw_mod.KEYWORD_COUNT}")
     if len(set(keywords)) != len(keywords):
         report.problems.append("触发词有重复")
 

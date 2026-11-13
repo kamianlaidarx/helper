@@ -1,4 +1,4 @@
-"""`quiz` 引擎：11 类竞猜 + 文字找茬 + 趣味问答，共用一张 `quiz_round`
+"""`quiz` 引擎：7 类竞猜 + 文字找茬，共用一张 `quiz_round`
 （`docs/design/playhub.md:438-446` 引擎协议、`:1548-1559` 第 2 批验收、§5.4 题库管线）。
 
 设计上的四个要点，改代码前先读：
@@ -34,52 +34,37 @@ from . import Reply, msg_nickname, msg_room, msg_uid, store_of
 
 # action → 题库类目。键必须与 keywords.py 的 action 逐字一致。
 CATEGORY_BY_ACTION: dict[str, str] = {
-    "quiz.chengyu": "chengyu",
     "quiz.song": "song",
     "quiz.riddle": "riddle",
     "quiz.movie": "movie",
-    "quiz.star": "star",
-    "quiz.animal": "animal",
-    "quiz.plant": "plant",
     "quiz.food": "food",
     "quiz.honor": "honor",
     "quiz.anime": "anime",
     "quiz.guoman": "guoman",
     "quiz.diff": "diff",
-    "quiz.trivia": "trivia",
 }
 
 #: 类目 → 卡面图标（小V 每个玩法一个固定图标，群里一眼分辨）
 CATEGORY_ICON: dict[str, str] = {
-    "chengyu": "🀄",
     "song": "🎵",
     "riddle": "🧩",
     "movie": "🎬",
-    "star": "🌟",
-    "animal": "🐾",
-    "plant": "🌿",
     "food": "🍜",
     "honor": "⚔️",
     "anime": "🎌",
     "guoman": "🐉",
     "diff": "🔍",
-    "trivia": "❓",
 }
 
 CATEGORY_LABEL: dict[str, str] = {
-    "chengyu": "猜成语",
     "song": "猜歌名",
     "riddle": "猜谜语",
     "movie": "猜电影",
-    "star": "猜明星",
-    "animal": "猜动物",
-    "plant": "猜植物",
     "food": "猜美食",
     "honor": "猜王者",
     "anime": "猜动漫",
     "guoman": "猜国漫",
     "diff": "文字找茬",
-    "trivia": "趣味问答",
 }
 
 # 框架控制词：只在有未结束对局时消费（见文件头第 2 条）。

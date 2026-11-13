@@ -22,8 +22,9 @@ MIN_QUESTIONS = 30          # 类目可用门槛
 BAD_LINE_RATIO = 0.10       # 坏行比例上限
 
 QUIZ_CATEGORIES = (
-    "chengyu", "riddle", "trivia", "song", "movie", "star",
-    "animal", "plant", "food", "honor", "anime", "guoman",
+    # 2026-11-13 删掉 chengyu / star / animal / plant / trivia 五个类目，
+    # 题库与校验清单同步收缩：剩下的 8 类才有 JSONL。
+    "riddle", "song", "movie", "food", "honor", "anime", "guoman",
 )
 DIFF_CATEGORIES = ("diff",)
 ALL_CATEGORIES = QUIZ_CATEGORIES + DIFF_CATEGORIES

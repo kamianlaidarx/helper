@@ -494,8 +494,8 @@ class BlockTests(Batch4Base):
 class Batch4BindingTests(unittest.TestCase):
     def test_all_actions_bound(self):
         self.assertEqual(CURRENT_BATCH, 4)
-        self.assertEqual(len(BINDINGS), 44)
-        self.assertEqual(check_bindings(), 44)
+        self.assertEqual(len(BINDINGS), 39)
+        self.assertEqual(check_bindings(), 39)
 
     def test_no_action_left_unplanned(self):
         self.assertEqual([a for a, b in ACTION_PLAN.items() if b is None], [])

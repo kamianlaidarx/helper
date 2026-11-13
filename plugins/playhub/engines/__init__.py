@@ -116,6 +116,7 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None, config=None,
     from .groupstat import GroupStatEngine
     from .moderation import ModerationEngine
     from ..adapters.outbound import build_provider
+    from ..adapters.xiaoapi import build_music_provider
 
     return {
         "daily": DailyEngine(rng=rng, now_fn=now_fn, repo_root=repo_root),
@@ -130,8 +131,10 @@ def build_engines(*, rng=None, now_fn=None, repo_root=None, config=None,
         "lounge": LoungeEngine(now_fn=now_fn, repo_root=repo_root),
         # 第 3 批：切磋（不造币，只记战绩）
         "duel": DuelEngine(rng=rng, now_fn=now_fn),
-        # 第 3 批：点歌队列（音源未接，只报位）
-        "music": MusicEngine(now_fn=now_fn),
+        # 第 3 批：点歌（配了 xiaoapi key 就查曲库，否则退回只登记报位）
+        "music": MusicEngine(
+            now_fn=now_fn, provider=build_music_provider(config), executor=executor
+        ),
         # 第 3 批：出站能力，天气走 adapters.outbound 的 provider（默认离线）；
         # 有执行器时两跳 HTTP 交给 worker，回调线程不再等网络（§2.5 第 3 条）
         "outbound": OutboundEngine(

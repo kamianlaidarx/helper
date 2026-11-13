@@ -2,7 +2,7 @@
 
 两种调用方式都覆盖：
 
-- `import`：拿到 `Report`，直接检查 62 个触发词、50 条闲聊、零误回复；
+- `import`：拿到 `Report`，直接检查 57 个触发词、50 条闲聊、零误回复；
 - `subprocess`：模拟同事在命令行敲 `.venv/bin/python tools/playhub_smoke.py`，
   断言退出码 0 且 stdout 里有摘要。
 
@@ -43,14 +43,14 @@ class SmokeScriptImportTests(unittest.TestCase):
     def test_script_exists(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"缺少冒烟脚本：{SCRIPT}")
 
-    def test_keyword_count_is_62(self) -> None:
-        self.assertEqual(self.report.total_keywords, 62)
+    def test_keyword_count_is_57(self) -> None:
+        self.assertEqual(self.report.total_keywords, 57)
         self.assertEqual(self.report.total_keywords, self.smoke.kw_mod.KEYWORD_COUNT)
 
     def test_every_keyword_was_probed(self) -> None:
         probed = [row.keyword for row in self.report.rows]
         self.assertEqual(probed, list(self.smoke.kw_mod.TABLE.keywords))
-        self.assertEqual(len(set(probed)), 62, "触发词不该重复")
+        self.assertEqual(len(set(probed)), 57, "触发词不该重复")
 
     def test_no_keyword_raised_or_fell_into_error_text(self) -> None:
         broken = {row.keyword: row.error for row in self.report.rows if row.error}
@@ -63,7 +63,7 @@ class SmokeScriptImportTests(unittest.TestCase):
             if not row.ok
         ]
         self.assertEqual(mismatched, [], "有触发词的静默/回包与设计不符")
-        self.assertEqual(self.report.replied + self.report.silent, 62)
+        self.assertEqual(self.report.replied + self.report.silent, 57)
 
     def test_chit_chat_gets_no_reply(self) -> None:
         self.assertEqual(self.report.chit_chat_sent, 50, "应当发满 50 条闲聊")
@@ -99,7 +99,7 @@ class SmokeScriptSubprocessTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, f"冒烟脚本退出码非 0：\n{proc.stdout}\n{proc.stderr}")
         self.assertIn("冒烟通过", proc.stdout)
-        self.assertIn("触发词：62", proc.stdout)
+        self.assertIn("触发词：57", proc.stdout)
         self.assertIn("误回复 0 条", proc.stdout)
         self.assertIn("有回复：", proc.stdout)
 

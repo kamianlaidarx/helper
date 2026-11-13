@@ -45,6 +45,7 @@
 2. **触发词账**：playhub **自有 62 个词**（承载 44 个动作，含别名），**复用框架既有 4 个词**（`提示`/`换一题`/`公布答案`/`结束`，来自 `wxbot_framework/text.py:8-9`；`退出猜成语` 为兼容别名）。启动时做全局唯一性校验，校验域 = 62 + 框架 8 个中文控制词 = **70 个词**；冲突则记 `logger.error` 并**禁用冲突的两侧引擎之一**（不整插件下线，见 §2.6 第 4 条）。
    **第 4 批增补**：新增第 62 个触发词 `解签`（动作 `daily.fortune_explain`，`risk=low`），归入第 3 项抽签（小V 抽签卡本身带「欲知详情可发送【解签】」），不另占 47 项编号。
    **本批增补**：新增第 61 个触发词 `帮助`（动作 `business.help`，`risk=low`）；`帮助` 是本批唯一新增词，其余 60 词口径不变。
+   **2026-11-13 变更**：按用户要求删掉 5 个文字猜题类目（`猜成语`/`猜明星`/`猜动物`/`猜植物`/`问答`，对应 `chengyu`/`star`/`animal`/`plant`/`trivia` 五份 JSONL 一并移出仓库，备份在 `backups/playhub-remove-5-quiz-20261113-1644/`）。自有触发词 **62 → 57**、动作 **44 → 39**、题库 **13 类 → 8 类**（song/riddle/movie/food/honor/anime/guoman/diff），校验域 **70 → 65**。本文其余章节里的「62 个词 / 13 类 / 44 动作」均为删除前的历史口径，一律以本段为准；`plugins/playhub/keywords.py`、`registry.py`、`core/menus.py`、`app.py` 与 `tools/playhub_smoke.py` 已同步。
 3. **一个插件**：`plugins/playhub/`，内部用子包分层；**42 个文件**（上限 64），约 6.2k 行、~323 KiB（上限 1 MiB）。新增 `keywords.py` 与 `core/permissions.py`，`router.py` 因删掉 trie 减 30 行、因 `#`/艾特范围解析增 2 KiB。
 4. 不拆成多个插件：跨插件共享 core 只能靠 `import _wxbot_plugins.<共享目录>`（`wxbot_framework/plugins.py:205-208`），共享目录不进任何插件的源码快照（`wxbot_framework/plugin_sources.py:82-97`），回滚不可复现且热更新失效——脆弱，不采用。
 5. 分层：`入口 → 关键词路由 → 引擎(engines) → 内核(core) → 唯一 SQL 出口(core/store.py)`；**只有 core 能出现 SQL**，引擎只调用函数契约，返回 `Reply` 对象，由入口在事务外统一发送。
@@ -1639,7 +1640,7 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 | 求财神（第 3 批落地口径） | **固定 +20 金币**，一日一次（`daily_counter` 键 `wealth`），签文从 `content/playhub/wealth.jsonl` 轮转——「金币产出全部为固定值，无随机金币」这条不变 |
 | 黄历 / 星座（第 3 批落地口径） | 全部本地化、不请求第三方。黄历支持 `黄历 明天` / `黄历 昨天`，内容按**日期**轮转（同一天全群同一份），文档写明「不接真实历法」；星座不给星座时用 `sha256(day, room, uid) % 12` 推定并在卡面上说明，四项指数与幸运数字/颜色同理由 `(种子, 维度)` 哈希得出，**同一天同一人不重摇** |
 | 切磋（第 3 批落地口径） | 不押金币、不发金币，只记战绩（`kv` 的 `duel:wins:<uid>` / `duel:losses:<uid>`）；`同意` 后 `rng.random() < 0.5` 定胜负；挑战 10 分钟内有效，同一个人同时只能有一场未完的挑战 |
-| 点歌（第 3 批落地口径） | 只登记队列（`kv` 的 `music:queue`，上限 **5** 首）并报排位，**不发音频**；每人 30 秒冷却（`music:cd:<uid>`）；队列在内存级的 `kv` 里，机器人重启即清空 |
+| 点歌（第 3 批落地口径，2026-11-13 接源） | 配了 `plugins.playhub.xiaoapi_key`（或环境变量 `XIAOAPI_KEY`）就查 xiaoapi `/detail/19`（`GET /v1/yy_sq.php?key=&msg=&n=1`），卡面回歌名/歌手/音质/播放直链；**接口响应里的 `tips` 一律丢弃**（推广文案，用户要求处理掉）。没配 key 时退回原行为：登记 `music:queue`（上限 **5** 首）并报排位、不发音频。共用 30 秒冷却（`music:cd:<uid>`）；查询走慢活执行器，超时 3 s、响应上限 64 KiB，失败一律按「没找到」 |
 | 文案（第 3 批落地口径） | 主题 日常/情话/挽尊/打气/傲娇/沙雕，游标按主题分别存 `kv`（`copy:cursor:<主题>`）；**游标先自增再取模**，所以每组第一次拿到的是第 2 条，随后顺序轮完再回到第 1 条——语义是「再发一次换下一条」，不是「从第一条开始」 |
 | 群空间（第 3 批落地口径） | 只读聚合（成员档案/在册关系/宝宝/群内金币与钻石总量/背包件数），缓存键按**整点**（`space:<YYYY-MM-DDTHH>`），每小时最多重算一次；写缓存用独立事务，不在只读事务里升级 |
 | 天气（第 3 批落地口径） | `adapters/outbound.WeatherProvider` 协议 + 默认 `OfflineProvider`（恒返回 `None`）：**没接服务就明说接不上，不编预报**；城市必填且 ≤12 字，缓存 10 分钟，失败不写缓存。**2026-11-06 选型定案：和风天气 QWeather v7**（`QWeatherProvider`，两跳：城市名 → LocationID → 3d 预报）。配置在 `bot_config.json → plugins.playhub`：`weather_provider: "qweather"` + `weather_api_key` + **`weather_api_host`（必填，形如 `abc123.re.qweatherapi.com`）**，可选 `weather_geo_host`、`weather_timeout_seconds`（默认 3，夹在 `0 < t ≤ 10`）。**2026-11-06 实测：旧公共域名 `devapi.qweather.com` 对新 key 回 404/403，必须用账号专属 API Host**；一个域名同时服务 geo 与 weather，只填 `weather_api_host` 时 geo 自动跟随。另实测该域名**无视 `Accept-Encoding: identity` 直接回 gzip**，传输层因此解压（`_maybe_gunzip`，解压后仍受 64 KiB 上限约束，防 gzip 炸弹）——不解压的症状是「key 正确但天气永远不可用」；缺 key / 名字不认识 / 值非法一律退回离线（失败关闭）。任何失败（网络、超时、码值非 200、JSON 坏、超长、主机名含 `/`/空格/`:`）都返回 `None` 不抛；**连续 3 次失败熔断 5 分钟**（`FAIL_THRESHOLD`/`BREAKER_SECONDS`），「查无此城」（码 404）不计入失败。**执行模型（2026-11-06）**：两跳 HTTP 走 `adapters/executor.py` 的 worker，回调线程不阻塞、也不回「正在查」，结果由 worker 直接发卡；worker 不碰 `Store`，缓存用 `defer` 交回插件线程、在下一条消息开头的 `flush()` 落库（所以「刚查完立刻再问」可能还没命中缓存）；执行器队列满时退化同步查询，宁可慢不丢查询 |
@@ -1954,7 +1955,7 @@ def resolve_workspace(ctx, msg) -> Path:
   - `plugins/playhub/engines/lottery.py`：`盲盒`（每日免费 1 次、`买次数` 5 钻限 2 次、连开最多 10、掉落表在 `core/items.BLIND_BOX_LOOT`）与 `开宝箱`（铜/银/金，币值 50/150/400，钻石按 1/20·1/12·1/8 判定，写 `lottery_draw` 台账）。**踩坑**：最初把「未购买的加购额度」当成可用次数，导致裸发第二次仍能抽、`盲盒 8` 抽了 3 次；修法是把「买到的次数」与「已用掉的加购次数」拆成两个计数器。
   - `plugins/playhub/engines/lounge.py`：`文案`（主题轮转 + `kv` 游标，带 `@昵称` 回包）、`群空间`（整点缓存 1 小时的只读聚合）、`聊天`（只回说明卡，**不假装会聊**）。**踩坑**：`space()` 曾在只读事务里再开写事务，报 `cannot start a transaction within a transaction`；改成出事务后单独写缓存。
   - `plugins/playhub/engines/duel.py`：`切磋 @对象` → `同意`/`拒绝`，10 分钟过期，胜率 50%，只记战绩不碰钱包（文档明确「不联动监狱/医院」）。
-  - `plugins/playhub/engines/music.py`：`点歌` 只登记队列（上限 5）与排位，每人 30 秒冷却，**不发音频**（音源 §9 未定）。
+  - `plugins/playhub/engines/music.py`：`点歌` 接 xiaoapi QQ 音乐接口（`adapters/xiaoapi.py`），回歌名/歌手/音质/直链并丢弃 `tips`；没配 key 时退回「登记队列（上限 5）+ 报排位、不发音频」。两种模式都是每人 30 秒冷却，且**只发链接、不下载音频文件**。
   - `plugins/playhub/engines/outbound.py` + `adapters/outbound.py`：`WeatherProvider` 协议 + 离线默认实现，`天气 城市` 在没接服务时明说「天气服务暂时连不上」，不编数据（配置方式只写在文档里，不进群聊，见 §4.5 第 8 条）。**2026-11-06 接上和风天气**：`QWeatherProvider`（两跳：`geo/v2/city/lookup` → `v7/weather/3d`）、`build_provider(config)` 失败关闭、3 s 超时、64 KiB 响应上限、连续 3 次失败熔断 5 分钟；`App(config=…)` → `build_engines(config=…)` → provider 一条线传下来。
   - `plugins/playhub/engines/daily.py`：`黄历`（`明天`/`昨天` 偏移、按日轮转）、`星座`（不给星座按哈希推定、四项指数 + 幸运数字/颜色）、`求财神`（固定 +20 金币、一日一次），文案库 `content/playhub/{almanac,horoscope,wealth}.jsonl` 各 24 条。
   - 签到现在发箱：每日铜箱 1 个、连签第 7 天额外金箱 1 个（`items.add` 写 `inventory`）。
@@ -2058,7 +2059,7 @@ def resolve_workspace(ctx, msg) -> Path:
 | 接口 | 风险 | 缓解 |
 |---|---|---|
 | 天气 API | **2026-11-06 已选型并落地：和风天气 QWeather v7**（免费订阅 1000 次/天，key 走账号专属 API Host `*.re.qweatherapi.com`）。剩余风险：key 泄漏、额度耗尽、`weather_api_host` 漏填（旧公共域名对新 key 一律 404/403） | `adapters/outbound` 定义 `WeatherProvider` 协议，默认实现为离线占位（`OfflineProvider` 返回 `None`，卡面写「天气服务暂时连不上 / 过一会儿再发一次试试」）；**配了 key 才启用**；3 s 超时（`0 < t ≤ 10`）+ **熔断（连续 3 次失败停 5 min）**；响应体上限 64 KiB（含 gzip 解压后）；城市名解析结果进程内缓存，热路径只一跳；失败一律返回 `None`，引擎只回「服务不可用」，不编数据 |
-| 点歌音源 | 音源合法性、音乐版权、大文件发送 | 默认只回文字"已点：《歌名》- 歌手"，不发音频文件；`file.send` 能力存在且框架已取消 20 MiB 上限（`docs/messages/files.md:24`），但**音源授权未解决前不启用音频** |
+| 点歌音源 | 音源合法性、音乐版权、大文件发送 | **2026-11-13 已定**：接 xiaoapi `/detail/19`（QQ 音乐，`GET /v1/yy_sq.php`），只回 `name/singer/quality/url` 与直链，**丢弃 `tips`**、**不下载音频文件**（群内发的是播放链接）。没配 key 时退回「只登记、报位、不发音频」 |
 | LLM（文案馆/智能聊天） | 成本、超时、串行阻塞 | 文案馆默认走本地库；LLM 为可选开关，且必须走执行器 + 3 s 超时 + 失败降级 |
 | 内容源（星座/黄历） | 无需外部，全部本地化 | 黄历用本地宜忌词表 + 日期确定性抽取（同一日期所有人结果一致），不请求第三方 |
 
@@ -2147,7 +2148,7 @@ def resolve_workspace(ctx, msg) -> Path:
 | # | 玩法 | 待确认的空白 |
 |---|---|---|
 | 1 | 签到 | **数值已定（§4.4）**：30 + 5×min(连签-1,10)，封顶 80；日界 `Asia/Shanghai`；每满 7 天（连签天数 % 7 == 0）额外 +3 钻石并赠 1 个金箱；断签则连签归 1 |
-| 2 | 点歌 | 音频数据源；是否收费；冷却时长；返回形式（文字/链接/文件）；失败是否退费 |
+| 2 | 点歌 | **已定（2026-11-13）**：数据源 xiaoapi QQ 音乐（`/detail/19`）；返回形式为文字卡 + 播放直链，不发音频文件；冷却 30 秒；查不到不回退任何扣款（点歌本来不收费）；`tips` 丢弃 |
 | 3 | 抽签 | **数值已定（§4.4）**：每日 1 次；五档 1/12、2/12、4/12、3/12、2/12；金币 30/20/12/8/5；上上签额外 +3 钻石 |
 | 4 | 黄历 | 用本地确定性口径还是指定来源；日期与个人化规则（是否按用户八字/生肖） |
 | 5 | 礼物 | 目录由谁定义；价格；库存制还是永久；是否转移价值；收礼方是否有收益 |
@@ -2160,5 +2161,5 @@ def resolve_workspace(ctx, msg) -> Path:
 | 12 | 潜水统计 | **部分已定（§4 表项 41）**：默认 7 天、只统计不清人、数据源 `activity_daily`+`member_seen`。剩余：「从未发言」的基准（建议按 `member_seen` 无记录计）、退群/机器人是否排除、结果条数上限（建议 20 条） |
 | 13 | 智能聊天 | 保留既有聊天插件还是 Playhub 提供；真实开关；模型接入方式；触发条件与费用 |
 
-外部依赖：**天气已定**（和风天气 QWeather，2026-11-06，配置见 §4.4「天气」行；key 待用户申请后填入 `bot_config.json`）；仍**未定**的是点歌音频源/费用/冷却、星座内容源（本地静态表即可）、智能聊天复用 `mention_chat` 还是新接（§9 第 7 条已核实不能群内开关）、礼物物品表由谁定义（v1 已按建议内置 5 档固定物品、20–520 金币，见 §4.4）。
+外部依赖：**天气已定**（和风天气 QWeather，2026-11-06，配置见 §4.4「天气」行；key 待用户申请后填入 `bot_config.json`）；点歌已定（xiaoapi `/detail/19`，2026-11-13）；仍**未定**的是星座内容源（本地静态表即可）、智能聊天复用 `mention_chat` 还是新接（§9 第 7 条已核实不能群内开关）、礼物物品表由谁定义（v1 已按建议内置 5 档固定物品、20–520 金币，见 §4.4）。
 

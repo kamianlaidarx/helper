@@ -193,7 +193,7 @@ class LoungeEngine:
             )
         body = [
             render.row("🤖 ", "聊天模型还没接上，我现在主要陪你玩小游戏"),
-            render.row("🎮 ", "能玩的：13 类猜题、成语接龙、看图猜成语"),
+            render.row("🎮 ", "能玩的：8 类猜题、成语接龙、看图猜成语"),
             render.row("💬 ", "想说话就直接 @我，我尽量接"),
         ]
         return Reply(

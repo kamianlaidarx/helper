@@ -104,16 +104,12 @@ TRIGGERS: tuple[Trigger, ...] = (
     # 19 排行榜 / 榜单（本批唯一已绑定入口）
     Trigger("排行榜", "ranking", "ranking.top", risk="low"),
     Trigger("榜单", "ranking", "ranking.top", risk="low"),
-    # 20-30 竞猜 11 类
-    Trigger("猜成语", "quiz", "quiz.chengyu", risk="low"),
+    # 20-30 竞猜（已删：猜成语 / 猜明星 / 猜动物 / 猜植物 / 问答，改用看图玩法）
     Trigger("猜歌名", "quiz", "quiz.song", risk="low"),
     Trigger("猜歌", "quiz", "quiz.song", risk="low"),
     Trigger("猜谜语", "quiz", "quiz.riddle", risk="low"),
     Trigger("猜谜", "quiz", "quiz.riddle", risk="low"),
     Trigger("猜电影", "quiz", "quiz.movie", risk="low"),
-    Trigger("猜明星", "quiz", "quiz.star", risk="low"),
-    Trigger("猜动物", "quiz", "quiz.animal", risk="low"),
-    Trigger("猜植物", "quiz", "quiz.plant", risk="low"),
     Trigger("猜美食", "quiz", "quiz.food", risk="low"),
     Trigger("猜王者", "quiz", "quiz.honor", risk="low"),
     Trigger("猜动漫", "quiz", "quiz.anime", risk="low"),
@@ -135,8 +131,7 @@ TRIGGERS: tuple[Trigger, ...] = (
     # 38 找茬 / 找不同
     Trigger("找茬", "quiz", "quiz.diff", risk="low"),
     Trigger("找不同", "quiz", "quiz.diff", risk="low"),
-    # 39 问答
-    Trigger("问答", "quiz", "quiz.trivia", risk="low"),
+    # 39 问答（已删，改用看图玩法）
     # 41 潜水
     Trigger("潜水", "groupstat", "groupstat.dive", risk="low"),
     # 42 邀请 / 邀请榜
@@ -150,10 +145,11 @@ TRIGGERS: tuple[Trigger, ...] = (
     Trigger("帮助", "business", "business.help", risk="low"),
 )
 
-# 词账：44 主词 + 18 别名 = 62（§4「触发词账」+ 第 1 批新增的 `帮助` + 第 4 批新增的 `解签`）。
-PRIMARY_COUNT = 44
+# 词账：39 主词 + 18 别名 = 57（§4「触发词账」+ 第 1 批新增的 `帮助` + 第 4 批新增的 `解签`，
+# 再减去 2026-11-13 删掉的 `猜成语` / `猜明星` / `猜动物` / `猜植物` / `问答` 五个主词）。
+PRIMARY_COUNT = 39
 ALIAS_COUNT = 18
-KEYWORD_COUNT = 62
+KEYWORD_COUNT = 57
 
 
 @dataclass(frozen=True)

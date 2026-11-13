@@ -22,7 +22,7 @@ from pathlib import Path
 from plugins.playhub.content import loader
 from plugins.playhub.core import Store
 
-CATEGORY = "chengyu"
+CATEGORY = "song"
 
 
 def _rows(count: int, *, category: str = CATEGORY, prefix: str = "题面") -> list[dict]:
@@ -104,6 +104,10 @@ class CacheTests(LoaderBase):
 
         rows = _rows(30, prefix="改后")
         _write(path, rows)
+        # Windows 上两次连续的等长写入可能落在同一个时钟刻度里，
+        # mtime 根本没变；这里显式往后推一秒，才是在考「靠 mtime 发现改动」。
+        stat = path.stat()
+        os.utime(path, (stat.st_atime, stat.st_mtime + 1))
         second = self.load()
 
         self.assertIsNot(second, first, "等长改写靠 mtime 发现，不能只看 size")
@@ -143,11 +147,11 @@ class RejectTests(LoaderBase):
         bank = self.load()
         self.assertEqual(len(bank.questions), 29)
         self.assertEqual(bank.bad_lines, 0)
-        self.assertIsNone(bank.by_id("chengyu-0001"))
+        self.assertIsNone(bank.by_id("song-0001"))
 
     def test_duplicate_answers_keep_only_the_first(self) -> None:
         rows = _rows(30)
-        rows.append({**rows[0], "id": "chengyu-0099"})
+        rows.append({**rows[0], "id": "song-0099"})
         _write(self.local, rows)
         bank = self.load()
         self.assertEqual(len(bank.questions), 30)
@@ -185,8 +189,8 @@ class BankShapeTests(LoaderBase):
     def test_by_id_finds_and_misses(self) -> None:
         _write(self.local, _rows(30))
         bank = self.load()
-        self.assertIsNotNone(bank.by_id("chengyu-0007"))
-        self.assertIsNone(bank.by_id("chengyu-9999"))
+        self.assertIsNotNone(bank.by_id("song-0007"))
+        self.assertIsNone(bank.by_id("song-9999"))
 
     def test_diff_bank_accepts_both_sides_of_the_edit(self) -> None:
         rows = [
