@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .adapters.executor import Executor
 from .app import App
-from .core import Store
+from .core import Store, switches
 from .scheduler import Scheduler
 
 # 存档根：`<project_root>/.runtime/playhub/<hash>/`，与 image_gallery 的布局同位。
@@ -72,7 +72,12 @@ class Plugin:
             self._executor = None
         try:
             root = getattr(ctx, "project_root", None) or Path(__file__).resolve().parents[2]
-            self._scheduler = Scheduler(ctx=ctx, root=Path(root), logger=self._logger(ctx))
+            self._scheduler = Scheduler(
+                ctx=ctx,
+                root=Path(root),
+                logger=self._logger(ctx),
+                switch_defaults=switches.parse_defaults(getattr(ctx, "config", None)),
+            )
             self._scheduler.start()
         except Exception:
             self._logger(ctx).exception("playhub 后台调度器启动失败；前台玩法不受影响")

@@ -390,10 +390,16 @@ def _salary_days(since_day: str, today: str) -> list[str]:
     return [(start + timedelta(days=offset)).isoformat() for offset in range((end - start).days + 1)]
 
 
-def run_salary(store, room: str, day: str, now: int, *, stopped=None) -> tuple[int, int]:
+def run_salary(
+    store, room: str, day: str, now: int, *, stopped=None,
+    switch_defaults: dict[str, bool] | None = None,
+) -> tuple[int, int]:
     """给这个群的每份雇佣合同发工资；返回 `(发出天数, 因余额不足跳过天数)`。"""
+    defaults = switch_defaults or {}
     with store.tx(immediate=False) as conn:
-        if not switches.is_on(conn, room, switches.EMPLOY):
+        if not switches.is_on(
+            conn, room, switches.EMPLOY, default=defaults.get(switches.EMPLOY, False)
+        ):
             return 0, 0                     # 开关关：整群不动，也不写 last_run
         pairs = conn.execute(
             "SELECT * FROM pair WHERE room = ? AND kind = ? AND state = 'active'",
@@ -550,6 +556,7 @@ class Scheduler:
         logger=None,
         store_factory=Store,
         sleep_event: threading.Event | None = None,
+        switch_defaults: dict[str, bool] | None = None,
     ) -> None:
         self._ctx = ctx
         self._root = Path(root)
@@ -557,6 +564,8 @@ class Scheduler:
         self._rng = rng if rng is not None else random.Random()
         self._log = logger if logger is not None else _LOG
         self._store_factory = store_factory
+        # 高危开关的配置默认值（`plugins.playhub.features`）；群内 kv 有行时仍以 kv 为准。
+        self._switch_defaults = dict(switch_defaults or {})
         # `_wake` 既是「首次延迟」也是「两次 tick 之间」的等待对象：
         # `stop()` 只要 set 它，线程立刻醒来退出，不用等满 10 分钟。
         self._wake = sleep_event if sleep_event is not None else threading.Event()
@@ -705,12 +714,18 @@ class Scheduler:
     def _salary_room(self, store, room: str, day: str, hm: tuple[int, int], now: int):
         """一个群的工资：开关关就不动；到期才发；发完写 `sched.last.salary`。"""
         with store.tx(immediate=False) as conn:
-            if not switches.is_on(conn, room, switches.EMPLOY):
+            if not switches.is_on(
+                conn, room, switches.EMPLOY,
+                default=self._switch_defaults.get(switches.EMPLOY, False),
+            ):
                 return 0, 0
             last = kv.get(conn, room, SCHED_LAST_SALARY)
         if not is_due_daily(last, day, hm, SALARY_AFTER):
             return 0, 0
-        paid, skipped = run_salary(store, room, day, now, stopped=self._stopped)
+        paid, skipped = run_salary(
+            store, room, day, now, stopped=self._stopped,
+            switch_defaults=self._switch_defaults,
+        )
         if self._stopped.is_set():
             # 卸载打断：**不**记「今天已发」，剩下的合同留给下一次启动；
             # 已发过的那些会撞幂等键（DuplicatePosting），重来时不会重复付钱。

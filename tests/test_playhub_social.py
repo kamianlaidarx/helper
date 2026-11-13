@@ -162,6 +162,59 @@ class SwitchTests(SocialTestBase):
             )
         self.assertIsNone(self.say("结婚 @小红"))
 
+    # -- 配置默认值（面板「插件配置」里的 features 段）-------------------------
+    def _app_with(self, config):
+        return App(store=self.store, now_fn=self.clock, repo_root=self.tmp, config=config)
+
+    def _say_with(self, app, text: str = "结婚 @小红"):
+        return app.handle_message(self.ctx, FakeMsg(text, sender_id=UID_A, nickname=NAME_A))
+
+    def test_config_features_enable_without_kv_row(self) -> None:
+        app = self._app_with({"features": {"marriage": True, "concubine": "on"}})
+        reply = self._say_with(app)
+        self.assertIsNotNone(reply)
+        self.assertIn("求婚已发出", reply.text)
+
+    def test_kv_row_overrides_config_default(self) -> None:
+        """群内显式设置优先于配置默认值，两个方向都成立。"""
+        self.enable("marriage", "off")
+        app = self._app_with({"features": {"marriage": True}})
+        self.assertIsNone(self._say_with(app))
+
+        self.enable("marriage", "1")
+        app = self._app_with({"features": {"marriage": False}})
+        self.assertIsNotNone(self._say_with(app))
+
+    def test_config_false_or_missing_stays_off(self) -> None:
+        for config in (
+            None,
+            {},
+            {"features": None},
+            {"features": []},
+            {"features": {"marriage": False}},
+            {"features": {"marriage": 0}},
+            {"features": {"marriage": ""}},
+            {"features": {"unknown": True}},
+        ):
+            app = self._app_with(config)
+            self.assertIsNone(self._say_with(app), config)
+
+    def test_parse_defaults_shape(self) -> None:
+        self.assertEqual(switches.parse_defaults(None), {})
+        self.assertEqual(switches.parse_defaults({"features": "x"}), {})
+        self.assertEqual(
+            switches.parse_defaults(
+                {"features": {"marriage": True, "concubine": "1", "baby": "off", "x": True}}
+            ),
+            {"marriage": True, "concubine": True, "baby": False},
+        )
+
+    def test_read_all_uses_defaults(self) -> None:
+        with self.store.tx(immediate=False) as conn:
+            got = switches.read_all(conn, ROOM, defaults={"marriage": True})
+        self.assertTrue(got["marriage"])
+        self.assertFalse(got["concubine"])
+
 
 class ProposeTests(SocialTestBase):
     def setUp(self) -> None:

@@ -135,6 +135,9 @@ class App:
         )
         self._log = logger if logger is not None else logging.getLogger("playhub.app")
         self._now = now_fn if now_fn is not None else clock.now_ts
+        # 配置默认值：面板「插件配置」保存的 JSON（= `plugins.playhub`）里的
+        # `features` 段。群内 kv 有显式行时仍以 kv 为准（见 `_switch_off`）。
+        self._switch_defaults = switches.parse_defaults(config)
 
     # -- 主链路 -------------------------------------------------------------
     def handle_message(self, ctx, msg) -> Reply | None:
@@ -433,6 +436,9 @@ class App:
 
         与 `_feature_off` 的关键差别：读不到按**关**（失败关闭）——这些是
         「改关系状态 + 花大钱」的功能，坏数据和缺配置都不该让它们自动打开。
+
+        取值顺序：群内 `kv` 的 `feature.<键>`（显式设置）→ 配置
+        `plugins.playhub.features`（面板里的默认值）→ 关。
         """
         name = ACTION_SWITCH.get(action)
         if name is None:
@@ -444,7 +450,9 @@ class App:
             return True
         try:
             with self._store.tx(immediate=False) as conn:
-                return not switches.is_on(conn, room, name)
+                return not switches.is_on(
+                    conn, room, name, default=self._switch_defaults.get(name, False)
+                )
         except Exception:
             self._log.exception("读高危开关失败：switch=%s room=%s", name, room)
             return True

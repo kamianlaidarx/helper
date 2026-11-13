@@ -1547,7 +1547,7 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 
 **只有 5 个开关，且只在配置里改，不做群内命令**（不注册「开启XX」这类词）。理由是**「参数形状」本身就是最好的开关**：高危项全是 `needs_arg=True` + `bare_behavior=silent`，裸发一个字都不回，再叠一层"开启/关闭"命令只是把复杂度搬家——它自己又是一个会误触的关键词，还得配权限门禁。
 
-| 开关 | 键（`kv`，按群） | 覆盖动作 | 默认 | 备注 |
+| 开关 | 配置键（`plugins.playhub.features`） | 覆盖动作 | 默认 | 备注 |
 |---|---|---|---|---|
 | 结婚 | `feature.marriage` | `social.marry`（结婚/求婚/我的婚姻/度蜜月/申请离婚/婚姻统计/清求婚次数） | **关** | 涉及 520 / 200 金币支出 |
 | 闺蜜与结拜 | `feature.kinship` | `social.sister`、`social.brother` | **关** | 关系类，语义敏感 |
@@ -1557,7 +1557,15 @@ def claim(store: Store, key: str, *, scope: str, now: int) -> bool
 
 其余 42 项**默认全开**（签到/抽签/猜 x/盲盒/黄历/星座/求财神/潜水/邀请/关系卡/群空间/点歌/找茬/问答…——它们没有副作用，或已由参数形状把关）。
 
-实现要点（`plugins/playhub/core/switches.py`）：`kv_key(name) -> "feature.<name>"`；`is_on()` **读不到按关、读失败按关**（失败关闭，与权限门禁同一口径）。它与引擎级总闸 `feature.<engine>`（`app._feature_off`，读不到按**开**）是两层，互不替代：前者是"这个群要不要这个敏感玩法"，后者是"整个引擎临时故障停机"。
+**怎么开（2026-11-13 补齐）**：面板「插件管理 → playhub → 配置」那段 JSON 加一行即可，保存后框架热重载插件，不用重启：
+
+```json
+{"features": {"marriage": true, "concubine": true}}
+```
+
+也可以直接编辑 `bot_config.json → plugins.playhub.features`（面板保存的就是这份），值写 `true`/`1`/`on` 为开，`false`/`0`/`off`/`no`/`disabled` 或留空为关。多群共用一个配置；某个群要单独关掉，仍可在该群 `kv` 写 `feature.<键>`（群内行优先于配置默认值）。
+
+实现要点（`plugins/playhub/core/switches.py`）：`kv_key(name) -> "feature.<name>"`；`parse_defaults(section)` 读配置里的 `features` 段；`is_on(conn, room, name, *, default=False)` **kv 有行按行、无行按 `default`、读失败按关**（失败关闭，与权限门禁同一口径）。它与引擎级总闸 `feature.<engine>`（`app._feature_off`，读不到按**开**）是两层，互不替代：前者是"这个群要不要这个敏感玩法"，后者是"整个引擎临时故障停机"。
 
 误触治理不靠开关数量，靠三条既有机制：整条消息 `strip()` 后**精确等于**关键词、`bare_behavior="silent"`、以及"50 条日常闲聊语料零回复"的验收（第 4 批验收第 7 条）。
 
